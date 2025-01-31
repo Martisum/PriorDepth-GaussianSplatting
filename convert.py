@@ -15,19 +15,34 @@ from argparse import ArgumentParser
 import shutil
 
 # This Python script is based on the shell converter script provided in the MipNerF 360 repository.
+# 创建命令行参数
 parser = ArgumentParser("Colmap converter")
+# store_true用法解释：
+# 当命令行输入中出现了“--no_gpu”，那么arg对象（往下看）的no_gpu成员就会被赋值为true，然后就可以根据这个判断是否需要执行不使用gpu的代码
 parser.add_argument("--no_gpu", action='store_true')
 parser.add_argument("--skip_matching", action='store_true')
+# required=True意思是这个命令行参数必须要写
 parser.add_argument("--source_path", "-s", required=True, type=str)
+# 指定默认值：当用户不输入 --camera 时，程序会自动使用默认值 "OPENCV"，即arg.camera="OPENCV"，类型为str
 parser.add_argument("--camera", default="OPENCV", type=str)
-parser.add_argument("--colmap_executable", default="", type=str)
+
+# 获取当前工作路径
+current_path = os.getcwd()
+colmap_path = os.path.join(current_path, 'external', r'COLMAP-3.8-windows-cuda\colmap.bat')
+# colmap_path = os.path.join(current_path, 'external', r'COLMAP-3.7-windows-no-cuda\colmap.bat')
+magick_path = os.path.join(current_path, 'external', r'ImageMagick-7.1.1-Q16-HDRI\magick.exe')
+
+# 这里原版convert.py是没有指定colmap的位置的，这里默认给一个colmap的path，以及magick的path，不用再手动输入了
+parser.add_argument("--colmap_executable", default=colmap_path, type=str)
 parser.add_argument("--resize", action="store_true")
-parser.add_argument("--magick_executable", default="", type=str)
+parser.add_argument("--magick_executable", default=magick_path, type=str)
 args = parser.parse_args()
+# 下面这句话的意思就是，如果colmap_executable参数有指定位置（上面在default里面指定了），就用这个指定位置，否则用3dgs默认提供的colmap
 colmap_command = '"{}"'.format(args.colmap_executable) if len(args.colmap_executable) > 0 else "colmap"
 magick_command = '"{}"'.format(args.magick_executable) if len(args.magick_executable) > 0 else "magick"
 use_gpu = 1 if not args.no_gpu else 0
 
+# 只要没说跳过特征提取，那就使用这个特征提取的方案
 if not args.skip_matching:
     os.makedirs(args.source_path + "/distorted/sparse", exist_ok=True)
 
