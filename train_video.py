@@ -2,7 +2,7 @@ import os
 import subprocess
 import DepthGen
 
-USE_DEPTHGEN = False
+USE_DEPTHGEN = True
 
 # 视频绝对路径
 video_path = r"D:\Work\AI\data\myvedio2\myvedio2.mp4"
@@ -28,8 +28,8 @@ subprocess.run(command, shell=True)
 if USE_DEPTHGEN:
     # 使用了先验深度，包含相机位姿估算、点云生成，无需重复特征匹配
     DepthGen.sparse_depth_gen(source_path=folder_path, sparse_model_path=folder_path + r'\distorted\sparse\0')
-    DepthGen.dense_depth_gen(image_path=folder_path+r'\input',sparse_model_path=folder_path + r'\distorted\sparse\0')
-    DepthGen.Depth_Optimize(sparse_model_path=folder_path + r'\distorted\sparse\0')
+    DepthGen.dense_depth_gen(image_path=folder_path + r'\input', sparse_model_path=folder_path + r'\distorted\sparse\0')
+    DepthGen.Depth_Optimize(source_path=folder_path, sparse_model_path=folder_path + r'\distorted\sparse\0')
     command = f'python convert.py -s {folder_path} --skip_matching'
 else:
     command = f'python convert.py -s {folder_path}'

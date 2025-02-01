@@ -122,14 +122,15 @@ def sparse_depth_gen(source_path, sparse_model_path, camera='OPENCV', use_gpu=1)
 
 def dense_depth_gen(image_path, sparse_model_path):
     global Depth_Dense, Is_Create_DepthMatrix
+    source_path = os.path.dirname(image_path)
 
-    if os.path.isfile("Depth_Dense.pkl"):
+    if os.path.isfile(source_path + "Depth_Dense.pkl"):
         Is_Create_DepthMatrix = True
         print("Depth_Dense.pkl is already exist, still create Depth_Dense.pkl? y/n")
         isGen = input("Input y/n:")
         if isGen != 'y':
             print("Reading data from Depth_Dense.pkl...")
-            with open("Depth_Dense.pkl", "rb") as f:
+            with open(source_path + "Depth_Dense.pkl", "rb") as f:
                 Depth_Dense = pickle.load(f)
             # print(Depth_Dense)
             return
@@ -147,7 +148,7 @@ def dense_depth_gen(image_path, sparse_model_path):
     # 创建一个进度条
     with tqdm(total=len(images), desc="ZoeDepth Progress") as pbar:
         for image_id, image in images.items():
-            image_PIL = Image.open("data/myvedio2/input/" + image.name).convert("RGB")  # load
+            image_PIL = Image.open(image_path + '/' + image.name).convert("RGB")  # load
             depth_numpy = zoe.infer_pil(image_PIL)  # as numpy
             Depth_Dense[image_id] = depth_numpy
             pbar.update(1)
@@ -171,7 +172,7 @@ def Fuzzy_error(sparse_model_path, image_id, s, t):
     return error_sum
 
 
-def Depth_Optimize(sparse_model_path):
+def Depth_Optimize(source_path, sparse_model_path):
     if not Is_Create_DepthMatrix:
         global Opt_ST_Dict
         # 限定s t的边界 s >= 1, t >= 1
@@ -190,7 +191,7 @@ def Depth_Optimize(sparse_model_path):
                 # print(f"error: {Fuzzy_error(sparse_model_path, image_id, opt_s, opt_t)}")
                 pbar.update(1)
         # 更新稠密深度矩阵
-        with tqdm(total=len(images)*Image_H*Image_W, desc="Matrix Saved Progress") as pbar:
+        with tqdm(total=len(images) * Image_H * Image_W, desc="Matrix Saved Progress") as pbar:
             for image_id, image_depth in Depth_Dense.items():
                 for h in range(0, Image_H):
                     for w in range(0, Image_W):
@@ -199,7 +200,7 @@ def Depth_Optimize(sparse_model_path):
                         pbar.update(1)
 
         # 将字典保存为文件
-        with open("Depth_Dense.pkl", "wb") as f:
+        with open(source_path+"Depth_Dense.pkl", "wb") as f:
             pickle.dump(Depth_Dense, f)
         print("Optimize done. Saved successfully!")
     else:
