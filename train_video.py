@@ -2,10 +2,12 @@ import os
 import subprocess
 import DepthGen
 
-USE_DEPTHGEN = True
+USE_DEPTHGEN = False
+USE_DEPTH_ANYTHING = True  # 使用官方的先验深度
 
 # 视频绝对路径
 video_path = r"D:\Work\AI\data\myvedio2\myvedio2.mp4"
+depth_anything_path = r"D:\Work\AI\Depth-Anything-V2-main"
 # 切分帧数，每秒多少帧
 fps = 2
 
@@ -35,5 +37,14 @@ else:
     command = f'python convert.py -s {folder_path}'
 subprocess.run(command, shell=True)
 # 模型训练脚本，模型会保存在output路径下
-command = f'python train.py -s {folder_path}'
-subprocess.run(command, shell=True)
+if USE_DEPTH_ANYTHING:
+    colmap_model_path = folder_path + r'\distorted'
+    # command = f'python {depth_anything_path}/run.py --encoder vitl --pred-only --grayscale --img-path {images_path} --outdir {depth_anything_path}'
+    # subprocess.run(command, shell=True)
+    command = f'python utils/make_depth_scale.py --base_dir {colmap_model_path} --depths_dir {depth_anything_path}'
+    subprocess.run(command, shell=True)
+    command = f'python train.py -s {folder_path} -d {depth_anything_path}'
+    subprocess.run(command, shell=True)
+else:
+    command = f'python train.py -s {folder_path}'
+    subprocess.run(command, shell=True)
