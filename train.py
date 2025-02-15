@@ -47,16 +47,53 @@ except:
     SPARSE_ADAM_AVAILABLE = False
 
 
-class Gaussian_Body:
-    def __init__(self, index: int, depth: float, pixel: tuple, radius: float, opacity: float):
-        self.index = index
-        self.depth = depth
-        self.pixel = pixel
-        self.radius = radius
-        self.opacity = opacity
+# class Gaussian_Body:
+#     def __init__(self, index: int, depth: float, pixel: tuple, radius: float, opacity: float):
+#         self.index = index
+#         self.depth = depth
+#         self.pixel = pixel
+#         self.radius = radius
+#         self.opacity = opacity
 
+
+def add_point_using_closest_colmap(self, new_xyz):
+    # 1. 从 COLMAP 重建的点云中提取现有点的坐标和特征
+    colmap_xyz = self._xyz  # COLMAP 重建的点坐标
+    colmap_features_dc = self._features_dc  # COLMAP 重建的特征数据
+    colmap_features_rest = self._features_rest  # COLMAP 重建的其他特征
+    colmap_opacities = self._opacity  # COLMAP 重建的透明度
+    colmap_scaling = self._scaling  # COLMAP 重建的缩放
+    colmap_rotation = self._rotation  # COLMAP 重建的旋转
+
+    # 2. 计算新点与 COLMAP 点云中所有点的欧几里得距离
+    distances = torch.norm(colmap_xyz - new_xyz, dim=-1)  # 计算新点与每个 COLMAP 点的距离
+    # 3. 找到最近的点
+    closest_point_index = torch.argmin(distances)  # 获取最小距离的索引
+    # 4. 提取最近点的特征信息
+    closest_features_dc = colmap_features_dc[closest_point_index]
+    closest_features_rest = colmap_features_rest[closest_point_index]
+    closest_opacity = colmap_opacities[closest_point_index]
+    closest_scaling = colmap_scaling[closest_point_index]
+    closest_rotation = colmap_rotation[closest_point_index]
+    # 5. 假设你希望新点的半径为某个默认值（例如，设置为与最近点相同的半径）
+    closest_tmp_radius = self.tmp_radii[closest_point_index]
+
+    # 6. 将新点和从最近 COLMAP 点提取的特征传递给 densification_postfix
+    self.densification_postfix(
+        new_xyz=torch.tensor([new_xyz], device='cuda'),
+        new_features_dc=torch.tensor([closest_features_dc], device='cuda'),
+        new_features_rest=torch.tensor([closest_features_rest], device='cuda'),
+        new_opacities=torch.tensor([closest_opacity], device='cuda'),
+        new_scaling=torch.tensor([closest_scaling], device='cuda'),
+        new_rotation=torch.tensor([closest_rotation], device='cuda'),
+        new_tmp_radii=torch.tensor([closest_tmp_radius], device='cuda')
+    )
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+    global invDepth, mono_invdepth
+    is_depth_available = False
+    is_depth_feedback = False
+
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(
             f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
@@ -179,14 +216,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Depth regularization
         Ll1depth_pure = 0.0
         if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
+            is_depth_available = True
+            # invDepth是渲染过程中出来的高斯体深度
             invDepth = render_pkg["depth"]
+            # mono_invdepth是depth-anything出来的先验深度
             mono_invdepth = viewpoint_cam.invdepthmap.cuda()
             depth_mask = viewpoint_cam.depth_mask.cuda()
 
-            Ll1depth_pure = torch.abs((invDepth - mono_invdepth) * depth_mask).mean()
-            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure
-            loss += Ll1depth
-            Ll1depth = Ll1depth.item()
+            # 选择是否启用深度约束
+            if is_depth_feedback:
+                Ll1depth_pure = torch.abs((invDepth - mono_invdepth) * depth_mask).mean()
+                Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure
+                loss += Ll1depth
+                Ll1depth = Ll1depth.item()
+            else:
+                Ll1depth_pure = 0
+                Ll1depth = 0
         else:
             Ll1depth = 0
 
@@ -230,6 +275,70 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+
+            # Gaussian Optimization Module
+            if is_depth_available:
+                visible_gaussian_indices = visibility_filter.squeeze()
+                visible_gaussians = gaussians.get_xyz[visible_gaussian_indices]
+                # 变换此高斯点坐标到相机坐标系，从而提取深度
+                R_torch = torch.tensor(viewpoint_cam.R, dtype=torch.float32, device=gaussians.get_xyz.device)
+                T_torch = torch.tensor(viewpoint_cam.T, dtype=torch.float32, device=gaussians.get_xyz.device)
+                relative_positions = visible_gaussians - T_torch  # 先平移（从世界坐标系到相机坐标系原点）
+                transformed_positions = torch.matmul(relative_positions, R_torch.T)
+
+                # 深度信息有效性检查，depth_info和visibility_filter中的内容是一一对应的
+                depth_info = transformed_positions[:, 2]  # 获取 Z 坐标
+                min_depth = depth_info.min()
+
+                # 求出像素坐标，从而找到对应先验深度
+                image_H, image_W = image.shape[-2:]
+                FoVx, FoVy = viewpoint_cam.FoVx, viewpoint_cam.FoVy
+                # 将 FoVx 和 FoVy 转换为 tensor 类型
+                FoVx = torch.tensor(FoVx, dtype=torch.float32)
+                FoVy = torch.tensor(FoVy, dtype=torch.float32)
+                # 计算焦距
+                f_x = image_W / (2 * torch.tan(FoVx / 2))
+                f_y = image_H / (2 * torch.tan(FoVy / 2))
+                # 假设相机的主点位于图像中心
+                c_x = image_W / 2
+                c_y = image_H / 2
+                # 获取 transformed_positions 中的每个高斯体的坐标 (N, 3)
+                X_camera = transformed_positions[:, 0]
+                Y_camera = transformed_positions[:, 1]
+                Z_camera = transformed_positions[:, 2]
+                # 通过投影公式转换到像素坐标
+                x_pixel = f_x * X_camera / Z_camera + c_x
+                y_pixel = f_y * Y_camera / Z_camera + c_y
+                # 将计算得到的像素坐标合并为 (N, 2) 的张量，也是和visibility_filter中的内容是一一对应的
+                pixel_coordinates = torch.stack((x_pixel, y_pixel), dim=1)
+
+                # 像素坐标有效性检查
+                # 取出 x_pixel 和 y_pixel
+                x_pixel = pixel_coordinates[:, 0]
+                y_pixel = pixel_coordinates[:, 1]
+                # 检查 x 和 y 是否在有效的像素范围内
+                valid_x = (x_pixel >= 0) & (x_pixel <= image_W)
+                valid_y = (y_pixel >= 0) & (y_pixel <= image_H)
+                valid_coordinates = valid_x & valid_y  # 合并两个条件，得到有效的像素坐标
+                valid_pixel_coordinates = pixel_coordinates[valid_coordinates]  # 输出有效的像素坐标
+                valid_gaussian_indices = visibility_filter[valid_coordinates]  # 输出有效的像素坐标对应的高斯体编号
+                valid_depth_info = depth_info[valid_coordinates]
+                # for i, (coord, depth) in enumerate(zip(valid_pixel_coordinates, valid_depth_info)):
+                #     print(f"有效像素坐标 {coord} 对应的高斯体编号: {valid_gaussian_indices[i]}, 深度: {depth}")
+
+                # 方案一：将渲染深度和depth_anything先验深度进行比对
+                y_coords = valid_pixel_coordinates[:, 0].to(torch.long)  # 形状为 (N,)
+                x_coords = valid_pixel_coordinates[:, 1].to(torch.long)  # 形状为 (N,)
+                valid_inv_depth = 1/invDepth[0, x_coords, y_coords]
+                valid_monoinv_depth = 1/mono_invdepth[0, x_coords, y_coords]
+                # 输出有效像素对应的深度倒数
+                # for i, inv_depth in enumerate(valid_inv_depth):
+                #     print(f"有效像素坐标 {valid_pixel_coordinates[i]} 对应的深度倒数: {1/inv_depth.item()}")
+                depth_diff = valid_inv_depth - valid_monoinv_depth  # 计算 valid_inv_depth 和 valid_monoinv_depth 之间的差值
+                # 确保非空
+                if depth_diff.numel() > 0:
+                    print(f"depth_diff.max():{torch.max(depth_diff)}")
+
 
             # Optimizer step
             if iteration < opt.iterations:

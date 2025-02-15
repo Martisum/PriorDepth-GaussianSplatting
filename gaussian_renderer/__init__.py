@@ -121,7 +121,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rendered_image = rendered_image.clamp(0, 1)
     out = {
         "render": rendered_image,
-        "viewspace_points": screenspace_points,
+        "viewspace_points": means2D, # 原来是screenspace_points
         "visibility_filter" : (radii > 0).nonzero(),
         "radii": radii,
         "depth" : depth_image  # 手动删掉了depth_image的返回

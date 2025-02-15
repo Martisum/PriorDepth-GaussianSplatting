@@ -450,6 +450,14 @@ class GaussianModel:
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
+        """
+            对3D高斯分布进行密集化和修剪的操作
+
+            :param max_grad: 梯度的最大阈值，用于判断是否需要克隆或分割。
+            :param min_opacity: 不透明度的最小阈值，低于此值的3D高斯将被删除。
+            :param extent: 场景的尺寸范围，用于评估高斯分布的大小是否合适。
+            :param max_screen_size: 最大屏幕尺寸阈值，用于修剪过大的高斯分布。
+        """
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
