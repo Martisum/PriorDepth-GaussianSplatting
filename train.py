@@ -55,40 +55,6 @@ except:
 #         self.radius = radius
 #         self.opacity = opacity
 
-
-def add_point_using_closest_colmap(self, new_xyz):
-    # 1. 从 COLMAP 重建的点云中提取现有点的坐标和特征
-    colmap_xyz = self._xyz  # COLMAP 重建的点坐标
-    colmap_features_dc = self._features_dc  # COLMAP 重建的特征数据
-    colmap_features_rest = self._features_rest  # COLMAP 重建的其他特征
-    colmap_opacities = self._opacity  # COLMAP 重建的透明度
-    colmap_scaling = self._scaling  # COLMAP 重建的缩放
-    colmap_rotation = self._rotation  # COLMAP 重建的旋转
-
-    # 2. 计算新点与 COLMAP 点云中所有点的欧几里得距离
-    distances = torch.norm(colmap_xyz - new_xyz, dim=-1)  # 计算新点与每个 COLMAP 点的距离
-    # 3. 找到最近的点
-    closest_point_index = torch.argmin(distances)  # 获取最小距离的索引
-    # 4. 提取最近点的特征信息
-    closest_features_dc = colmap_features_dc[closest_point_index]
-    closest_features_rest = colmap_features_rest[closest_point_index]
-    closest_opacity = colmap_opacities[closest_point_index]
-    closest_scaling = colmap_scaling[closest_point_index]
-    closest_rotation = colmap_rotation[closest_point_index]
-    # 5. 假设你希望新点的半径为某个默认值（例如，设置为与最近点相同的半径）
-    closest_tmp_radius = self.tmp_radii[closest_point_index]
-
-    # 6. 将新点和从最近 COLMAP 点提取的特征传递给 densification_postfix
-    self.densification_postfix(
-        new_xyz=torch.tensor([new_xyz], device='cuda'),
-        new_features_dc=torch.tensor([closest_features_dc], device='cuda'),
-        new_features_rest=torch.tensor([closest_features_rest], device='cuda'),
-        new_opacities=torch.tensor([closest_opacity], device='cuda'),
-        new_scaling=torch.tensor([closest_scaling], device='cuda'),
-        new_rotation=torch.tensor([closest_rotation], device='cuda'),
-        new_tmp_radii=torch.tensor([closest_tmp_radius], device='cuda')
-    )
-
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     global invDepth, mono_invdepth
     is_depth_available = False
@@ -329,16 +295,55 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # 方案一：将渲染深度和depth_anything先验深度进行比对
                 y_coords = valid_pixel_coordinates[:, 0].to(torch.long)  # 形状为 (N,)
                 x_coords = valid_pixel_coordinates[:, 1].to(torch.long)  # 形状为 (N,)
-                valid_inv_depth = 1/invDepth[0, x_coords, y_coords]
-                valid_monoinv_depth = 1/mono_invdepth[0, x_coords, y_coords]
+                valid_inv_depth = 1 / invDepth[0, x_coords, y_coords]
+                valid_monoinv_depth = 1 / mono_invdepth[0, x_coords, y_coords]
                 # 输出有效像素对应的深度倒数
                 # for i, inv_depth in enumerate(valid_inv_depth):
                 #     print(f"有效像素坐标 {valid_pixel_coordinates[i]} 对应的深度倒数: {1/inv_depth.item()}")
-                depth_diff = valid_inv_depth - valid_monoinv_depth  # 计算 valid_inv_depth 和 valid_monoinv_depth 之间的差值
+                valid_depth_diff = valid_inv_depth - valid_monoinv_depth  # 计算 valid_inv_depth 和 valid_monoinv_depth 之间的差值
                 # 确保非空
-                if depth_diff.numel() > 0:
-                    print(f"depth_diff.max():{torch.max(depth_diff)}")
+                if valid_depth_diff.numel() > 0:
+                    # print(f"depth_diff.max():{torch.max(valid_depth_diff)}")
+                    indices = torch.nonzero(valid_depth_diff > 5)  # 找出差值大于5的下标，若非空则认为这些点过远，需要在先验位置处添加高斯体
+                    if indices.size(0) > 0:
+                        toadd_gaussian_indices = valid_gaussian_indices[indices]
+                        toadd_depth_info = valid_depth_info[indices]
+                        toadd_inv_depth = valid_inv_depth[indices]
+                        toadd_monoinv_depth = valid_monoinv_depth[indices]
+                        # 最小二乘法求k b
+                        toadd_inv_depth = torch.tensor(toadd_inv_depth, dtype=torch.float32)
+                        toadd_depth_info = torch.tensor(toadd_depth_info, dtype=torch.float32)
+                        # 将数据调整为 (N, 1) 形状
+                        toadd_inv_depth = toadd_inv_depth.view(-1, 1)
+                        toadd_depth_info = toadd_depth_info.view(-1, 1)
+                        # 构造输入矩阵 X，第一列是 toadd_inv_depth，第二列是全1，用来表示偏置项 b 形状为 (N, 2)
+                        X = torch.cat([toadd_inv_depth, torch.ones_like(toadd_inv_depth)], dim=1)
+                        y = toadd_depth_info  # (N, 1) 目标向量 y 是 toadd_depth_info
+                        XT_X = X.T @ X  # 形状为 (2, 2)
+                        XT_y = X.T @ y  # 形状为 (2, 1)
+                        # 使用 torch.linalg.solve 代替手动求逆，保证数值稳定性
+                        k_b = torch.linalg.solve(XT_X, XT_y)  # 形状为 (2, 1)
+                        # 提取 k 和 b，满足k*toadd_inv_depth+b=toadd_depth_info
+                        k = k_b[0, 0]
+                        b = k_b[1, 0]
 
+                        toadd_gaussian_xyz = gaussians.get_xyz[toadd_gaussian_indices]
+                        toadd_gaussian_xyz = toadd_gaussian_xyz.squeeze()
+                        # 易错点，检查是否变成了一维张量 (3,)，如果是，可以使用 unsqueeze 恢复为二维张量
+                        if toadd_gaussian_xyz.ndimension() == 1:
+                            toadd_gaussian_xyz = toadd_gaussian_xyz.unsqueeze(0)  # 恢复为 (1, 3)
+                        print(toadd_gaussian_xyz.shape)
+                        toadd_x_coords = toadd_gaussian_xyz[:, 0]  # 提取所有高斯体的 x 坐标
+                        toadd_y_coords = toadd_gaussian_xyz[:, 1]  # 提取所有高斯体的 y 坐标
+                        toadd_z_coords = toadd_monoinv_depth * k + b
+                        toadd_z_coords = toadd_z_coords.squeeze()
+                        if toadd_z_coords.ndimension() == 0:  # 变成标量
+                            toadd_z_coords = toadd_z_coords.unsqueeze(0)  # 恢复成形状为 (1,)
+                        toadd_new_xyz = torch.stack((toadd_x_coords, toadd_y_coords, toadd_z_coords),
+                                                    dim=-1)  # 新的 (N, 3) 坐标
+                        for xyz in toadd_new_xyz:
+                            # 传入了高斯体的半径变量
+                            gaussians.add_point_using_closest_colmap(xyz, radii)
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -428,6 +433,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 
 if __name__ == "__main__":
     import torch
+
     print(torch.version.cuda)
 
     # Set up command line argument parser
