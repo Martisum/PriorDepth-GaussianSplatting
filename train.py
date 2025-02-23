@@ -14,6 +14,9 @@ import os
 import numpy as np
 import torch
 from random import randint
+
+from sympy.physics.paulialgebra import epsilon
+
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
@@ -56,8 +59,9 @@ except:
 #         self.opacity = opacity
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
     global invDepth, mono_invdepth
-    is_depth_available = False
     is_depth_feedback = False
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
@@ -90,6 +94,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
+        is_depth_available = False  # 重置状态
+
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -226,25 +232,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
-            # Densification
-            if iteration < opt.densify_until_iter:
-                # Keep track of max radii in image-space for pruning
-                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter],
-                                                                     radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-
-                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold,
-                                                radii)
-
-                if iteration % opt.opacity_reset_interval == 0 or (
-                        dataset.white_background and iteration == opt.densify_from_iter):
-                    gaussians.reset_opacity()
-
-            # Gaussian Optimization Module
+            # Gaussian Optimization Module（可能这一步要放在致密化之前，因为致密化改变了高斯体个数，使得渲染结果的可见性和高斯体总数对不上）
             if is_depth_available:
+                # print(f"gaussians.get_xyz shape: {gaussians.get_xyz.shape}")
                 visible_gaussian_indices = visibility_filter.squeeze()
+                # print(f"visible_gaussian_indices: {torch.max(visible_gaussian_indices)}")
                 visible_gaussians = gaussians.get_xyz[visible_gaussian_indices]
                 # 变换此高斯点坐标到相机坐标系，从而提取深度
                 R_torch = torch.tensor(viewpoint_cam.R, dtype=torch.float32, device=gaussians.get_xyz.device)
@@ -285,7 +277,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # 检查 x 和 y 是否在有效的像素范围内
                 valid_x = (x_pixel >= 0) & (x_pixel <= image_W)
                 valid_y = (y_pixel >= 0) & (y_pixel <= image_H)
-                valid_coordinates = valid_x & valid_y  # 合并两个条件，得到有效的像素坐标
+                # 检查像素坐标是否在invDepth和mono_invdepth有效范围内
+                inv_depth_height, inv_depth_width = invDepth.shape[1], invDepth.shape[2]
+                mono_invdepth_height, mono_invdepth_width = mono_invdepth.shape[1], mono_invdepth.shape[2]
+                valid_inv_coords = (x_pixel < inv_depth_width) & (y_pixel < inv_depth_height)
+                valid_mono_coords = (x_pixel < mono_invdepth_width) & (y_pixel < mono_invdepth_height)
+
+                valid_coordinates = valid_x & valid_y & valid_inv_coords & valid_mono_coords  # 合并四个条件，得到有效的像素坐标
                 valid_pixel_coordinates = pixel_coordinates[valid_coordinates]  # 输出有效的像素坐标
                 valid_gaussian_indices = visibility_filter[valid_coordinates]  # 输出有效的像素坐标对应的高斯体编号
                 valid_depth_info = depth_info[valid_coordinates]
@@ -295,18 +293,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # 方案一：将渲染深度和depth_anything先验深度进行比对
                 y_coords = valid_pixel_coordinates[:, 0].to(torch.long)  # 形状为 (N,)
                 x_coords = valid_pixel_coordinates[:, 1].to(torch.long)  # 形状为 (N,)
-                valid_inv_depth = 1 / invDepth[0, x_coords, y_coords]
-                valid_monoinv_depth = 1 / mono_invdepth[0, x_coords, y_coords]
+                epsilon = 1e-6
+                valid_inv_depth = 1 / (invDepth[0, x_coords, y_coords]+epsilon)
+                valid_monoinv_depth = 1 / (mono_invdepth[0, x_coords, y_coords]+epsilon)
                 # 输出有效像素对应的深度倒数
                 # for i, inv_depth in enumerate(valid_inv_depth):
                 #     print(f"有效像素坐标 {valid_pixel_coordinates[i]} 对应的深度倒数: {1/inv_depth.item()}")
-                valid_depth_diff = valid_inv_depth - valid_monoinv_depth  # 计算 valid_inv_depth 和 valid_monoinv_depth 之间的差值
+                valid_depth_diff = valid_inv_depth - valid_monoinv_depth  # 计算 valid_inv_depth 和 valid_monoinv_depth
+                # 之间的差值
                 # 确保非空
                 if valid_depth_diff.numel() > 0:
                     # print(f"depth_diff.max():{torch.max(valid_depth_diff)}")
                     indices = torch.nonzero(valid_depth_diff > 5)  # 找出差值大于5的下标，若非空则认为这些点过远，需要在先验位置处添加高斯体
                     if indices.size(0) > 0:
+                        # 这里筛选出来的toadd_gaussian_indices是绝对的高斯编号
                         toadd_gaussian_indices = valid_gaussian_indices[indices]
+                        # 这里的toadd_depth_info已经是相机坐标系下的深度了
                         toadd_depth_info = valid_depth_info[indices]
                         toadd_inv_depth = valid_inv_depth[indices]
                         toadd_monoinv_depth = valid_monoinv_depth[indices]
@@ -327,23 +329,56 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         k = k_b[0, 0]
                         b = k_b[1, 0]
 
-                        toadd_gaussian_xyz = gaussians.get_xyz[toadd_gaussian_indices]
+                        visible_gaussian_indices, _ = torch.sort(visible_gaussian_indices)
+                        # 这一步是求出了toadd_gaussian_indices所列编号在visible_gaussian_indices中的下标数值。因为toadd_gaussian_indices是高斯编号
+                        # 因为visible_gaussian_indices和transformed_positions长度一致，所以下标同一。因此我们可以用这个下标去索引所有的相机坐标系下要改的高斯体坐标
+                        matching_indices = torch.searchsorted(visible_gaussian_indices, toadd_gaussian_indices)
+
+                        # toadd_gaussian_xyz = gaussians.get_xyz[toadd_gaussian_indices]
+                        toadd_gaussian_xyz = transformed_positions[matching_indices]  # 利用matching_indices索引
                         toadd_gaussian_xyz = toadd_gaussian_xyz.squeeze()
                         # 易错点，检查是否变成了一维张量 (3,)，如果是，可以使用 unsqueeze 恢复为二维张量
                         if toadd_gaussian_xyz.ndimension() == 1:
                             toadd_gaussian_xyz = toadd_gaussian_xyz.unsqueeze(0)  # 恢复为 (1, 3)
                         print(toadd_gaussian_xyz.shape)
-                        toadd_x_coords = toadd_gaussian_xyz[:, 0]  # 提取所有高斯体的 x 坐标
-                        toadd_y_coords = toadd_gaussian_xyz[:, 1]  # 提取所有高斯体的 y 坐标
+                        toadd_x_coords = toadd_gaussian_xyz[:, 0]  # 提取相机坐标系的 x 坐标
+                        toadd_y_coords = toadd_gaussian_xyz[:, 1]  # 提取相机坐标系的 y 坐标
+                        # 这里求出来的toadd_z_coords，是相机坐标系下应该有的深度。需要变换为世界坐标系的深度，才能修改进高斯体
                         toadd_z_coords = toadd_monoinv_depth * k + b
                         toadd_z_coords = toadd_z_coords.squeeze()
                         if toadd_z_coords.ndimension() == 0:  # 变成标量
                             toadd_z_coords = toadd_z_coords.unsqueeze(0)  # 恢复成形状为 (1,)
-                        toadd_new_xyz = torch.stack((toadd_x_coords, toadd_y_coords, toadd_z_coords),
+                        toadd_cam_xyz = torch.stack((toadd_x_coords, toadd_y_coords, toadd_z_coords),
                                                     dim=-1)  # 新的 (N, 3) 坐标
-                        for xyz in toadd_new_xyz:
-                            # 传入了高斯体的半径变量
-                            gaussians.add_point_using_closest_colmap(xyz, radii)
+                        toadd_world_xyz = torch.matmul(toadd_cam_xyz, R_torch) + T_torch  # 先旋转再平移
+                        gaussians.set_z(toadd_world_xyz[:, 2], toadd_gaussian_indices)  # 这里因为要改高斯体了，所以需要使用绝对的编号
+                        # for idx, ta_gs_xyz in enumerate(toadd_gaussian_xyz):
+                        #     # 打印编号和深度信息TransWld_Coor和Wld_Coor应该相近，Cam_Coor高斯体相机坐标系坐标，
+                        #     print(f"Gaussian number {toadd_gaussian_indices[idx]} - Cam_Coor: {ta_gs_xyz} - "
+                        #           f"TransWld_Coor: {toadd_world_xyz[idx]} - Wld_"
+                        #           f"Coor: {gaussians.get_xyz[toadd_gaussian_indices[idx]]}")
+
+                        # for xyz in toadd_new_xyz:
+                        #     # 传入了高斯体的半径变量
+                        #     gaussians.add_point_using_closest_colmap(xyz, radii)
+                        # print("end")
+
+
+            # Densification
+            if iteration < opt.densify_until_iter:
+                # Keep track of max radii in image-space for pruning
+                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter],
+                                                                     radii[visibility_filter])
+                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+
+                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold,
+                                                radii)
+
+                if iteration % opt.opacity_reset_interval == 0 or (
+                        dataset.white_background and iteration == opt.densify_from_iter):
+                    gaussians.reset_opacity()
 
             # Optimizer step
             if iteration < opt.iterations:

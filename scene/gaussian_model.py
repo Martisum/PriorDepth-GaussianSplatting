@@ -501,6 +501,15 @@ class GaussianModel:
                                                              keepdim=True)
         self.denom[update_filter] += 1
 
+    def set_z(self, new_z, indices):
+        if new_z.dim() == 1:  # 只有在 new_z 是 (4,) 的情况下才需要调整
+            new_z = new_z.unsqueeze(-1).unsqueeze(-1)  # 转换为 (4, 1, 1)
+
+        if indices is None:
+            raise ValueError("New z indices must have length.")
+        else:
+            self._xyz[indices, 2] = new_z
+
     def add_point_using_closest_colmap(self, new_xyz, radii):
         # 1. 从 COLMAP 重建的点云中提取现有点的坐标和特征
         colmap_xyz = self._xyz  # COLMAP 重建的点坐标
