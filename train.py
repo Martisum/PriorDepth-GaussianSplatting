@@ -13,6 +13,7 @@ import os
 
 import numpy as np
 import torch
+import GaussianOpt
 from random import randint
 
 from sympy.physics.paulialgebra import epsilon
@@ -237,53 +238,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # print(f"gaussians.get_xyz shape: {gaussians.get_xyz.shape}")
                 visible_gaussian_indices = visibility_filter.squeeze()
                 # print(f"visible_gaussian_indices: {torch.max(visible_gaussian_indices)}")
+                # visible_gaussians索引范围：所有可见高斯体
                 visible_gaussians = gaussians.get_xyz[visible_gaussian_indices]
                 # 变换此高斯点坐标到相机坐标系，从而提取深度
-                R_torch = torch.tensor(viewpoint_cam.R, dtype=torch.float32, device=gaussians.get_xyz.device)
-                T_torch = torch.tensor(viewpoint_cam.T, dtype=torch.float32, device=gaussians.get_xyz.device)
-                relative_positions = visible_gaussians - T_torch  # 先平移（从世界坐标系到相机坐标系原点）
-                transformed_positions = torch.matmul(relative_positions, R_torch.T)
+                transformed_positions = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, visible_gaussians, gaussians)
 
                 # 深度信息有效性检查，depth_info和visibility_filter中的内容是一一对应的
                 depth_info = transformed_positions[:, 2]  # 获取 Z 坐标
                 min_depth = depth_info.min()
+                # 透视投影，建立相机坐标和像素坐标上的关系，从而找到对应像素都有哪些高斯体
+                pixel_coordinates = GaussianOpt.PerspectiveProj(image, viewpoint_cam.FoVx, viewpoint_cam.FoVy,
+                                                                transformed_positions)
 
-                # 求出像素坐标，从而找到对应先验深度
-                image_H, image_W = image.shape[-2:]
-                FoVx, FoVy = viewpoint_cam.FoVx, viewpoint_cam.FoVy
-                # 将 FoVx 和 FoVy 转换为 tensor 类型
-                FoVx = torch.tensor(FoVx, dtype=torch.float32)
-                FoVy = torch.tensor(FoVy, dtype=torch.float32)
-                # 计算焦距
-                f_x = image_W / (2 * torch.tan(FoVx / 2))
-                f_y = image_H / (2 * torch.tan(FoVy / 2))
-                # 假设相机的主点位于图像中心
-                c_x = image_W / 2
-                c_y = image_H / 2
-                # 获取 transformed_positions 中的每个高斯体的坐标 (N, 3)
-                X_camera = transformed_positions[:, 0]
-                Y_camera = transformed_positions[:, 1]
-                Z_camera = transformed_positions[:, 2]
-                # 通过投影公式转换到像素坐标
-                x_pixel = f_x * X_camera / Z_camera + c_x
-                y_pixel = f_y * Y_camera / Z_camera + c_y
-                # 将计算得到的像素坐标合并为 (N, 2) 的张量，也是和visibility_filter中的内容是一一对应的
-                pixel_coordinates = torch.stack((x_pixel, y_pixel), dim=1)
-
-                # 像素坐标有效性检查
-                # 取出 x_pixel 和 y_pixel
-                x_pixel = pixel_coordinates[:, 0]
-                y_pixel = pixel_coordinates[:, 1]
-                # 检查 x 和 y 是否在有效的像素范围内
-                valid_x = (x_pixel >= 0) & (x_pixel <= image_W)
-                valid_y = (y_pixel >= 0) & (y_pixel <= image_H)
-                # 检查像素坐标是否在invDepth和mono_invdepth有效范围内
-                inv_depth_height, inv_depth_width = invDepth.shape[1], invDepth.shape[2]
-                mono_invdepth_height, mono_invdepth_width = mono_invdepth.shape[1], mono_invdepth.shape[2]
-                valid_inv_coords = (x_pixel < inv_depth_width) & (y_pixel < inv_depth_height)
-                valid_mono_coords = (x_pixel < mono_invdepth_width) & (y_pixel < mono_invdepth_height)
-
-                valid_coordinates = valid_x & valid_y & valid_inv_coords & valid_mono_coords  # 合并四个条件，得到有效的像素坐标
+                # 像素坐标有效性检查，检查结果是返回一个包含T/F的一维张量，借此筛选出对渲染图像有影响的高斯体
+                valid_coordinates = GaussianOpt.valid_pixel_filter(image, pixel_coordinates, invDepth,
+                                                                   mono_invdepth)  # 合并四个条件，得到有效的像素坐标
                 valid_pixel_coordinates = pixel_coordinates[valid_coordinates]  # 输出有效的像素坐标
                 valid_gaussian_indices = visibility_filter[valid_coordinates]  # 输出有效的像素坐标对应的高斯体编号
                 valid_depth_info = depth_info[valid_coordinates]
@@ -294,8 +263,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 y_coords = valid_pixel_coordinates[:, 0].to(torch.long)  # 形状为 (N,)
                 x_coords = valid_pixel_coordinates[:, 1].to(torch.long)  # 形状为 (N,)
                 epsilon = 1e-6
-                valid_inv_depth = 1 / (invDepth[0, x_coords, y_coords]+epsilon)
-                valid_monoinv_depth = 1 / (mono_invdepth[0, x_coords, y_coords]+epsilon)
+                valid_inv_depth = 1 / (invDepth[0, x_coords, y_coords] + epsilon)
+                valid_monoinv_depth = 1 / (mono_invdepth[0, x_coords, y_coords] + epsilon)
                 # 输出有效像素对应的深度倒数
                 # for i, inv_depth in enumerate(valid_inv_depth):
                 #     print(f"有效像素坐标 {valid_pixel_coordinates[i]} 对应的深度倒数: {1/inv_depth.item()}")
@@ -350,7 +319,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                             toadd_z_coords = toadd_z_coords.unsqueeze(0)  # 恢复成形状为 (1,)
                         toadd_cam_xyz = torch.stack((toadd_x_coords, toadd_y_coords, toadd_z_coords),
                                                     dim=-1)  # 新的 (N, 3) 坐标
-                        toadd_world_xyz = torch.matmul(toadd_cam_xyz, R_torch) + T_torch  # 先旋转再平移
+                        toadd_world_xyz = GaussianOpt.CtoW(viewpoint_cam.R, viewpoint_cam.T, toadd_cam_xyz, gaussians)
                         gaussians.set_z(toadd_world_xyz[:, 2], toadd_gaussian_indices)  # 这里因为要改高斯体了，所以需要使用绝对的编号
                         # for idx, ta_gs_xyz in enumerate(toadd_gaussian_xyz):
                         #     # 打印编号和深度信息TransWld_Coor和Wld_Coor应该相近，Cam_Coor高斯体相机坐标系坐标，
@@ -362,7 +331,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         #     # 传入了高斯体的半径变量
                         #     gaussians.add_point_using_closest_colmap(xyz, radii)
                         # print("end")
-
 
             # Densification
             if iteration < opt.densify_until_iter:
