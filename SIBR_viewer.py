@@ -1,7 +1,7 @@
 import subprocess
 
 # output保存路径
-model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\eval_gsopt1'
+model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\eval_gsopt2'
 # model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\02091922'
 
 # 脚本执行

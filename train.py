@@ -28,6 +28,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+import matplotlib.pyplot as plt
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -50,7 +51,6 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
-
 # class Gaussian_Body:
 #     def __init__(self, index: int, depth: float, pixel: tuple, radius: float, opacity: float):
 #         self.index = index
@@ -58,12 +58,15 @@ except:
 #         self.pixel = pixel
 #         self.radius = radius
 #         self.opacity = opacity
+loss_list = []
+
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
-    global invDepth, mono_invdepth
+    global invDepth, mono_invdepth, loss_list
     is_depth_feedback = False
+    plt.ion()
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(
@@ -221,6 +224,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.set_postfix(
                     {"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
                 progress_bar.update(10)
+
+                if iteration>2000 and ema_loss_for_log<0.02:
+                    loss_list.append(ema_loss_for_log)
+                    # 清空之前的图像，防止重叠
+                    plt.clf()
+                    # 绘制损失曲线
+                    plt.plot(range(1, len(loss_list) + 1), loss_list, label="Training Loss", color='blue')
+                    plt.xlabel("Epoch")
+                    plt.ylabel("Loss")
+                    plt.title("Training Loss Curve (Dynamic Update)")
+                    plt.legend()
+                    plt.grid()
+                    # 短暂暂停，允许 matplotlib 更新
+                    plt.pause(0.1)
+
             if iteration == opt.iterations:
                 progress_bar.close()
 
@@ -235,10 +253,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Gaussian Optimization Module（可能这一步要放在致密化之前，因为致密化改变了高斯体个数，使得渲染结果的可见性和高斯体总数对不上）
             # is_depth_available = False
-            if is_depth_available:
-                # print(f"gaussians.get_xyz shape: {gaussians.get_xyz.shape}")
+            if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
                 visible_gaussian_indices = visibility_filter.squeeze()
-                # print(f"visible_gaussian_indices: {torch.max(visible_gaussian_indices)}")
                 # visible_gaussians和transformed_positions下标都不是高斯体编号！
                 visible_gaussians = gaussians.get_xyz[visible_gaussian_indices]
                 # 变换此高斯点坐标到相机坐标系，从而提取深度
@@ -254,7 +270,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 GaussianOpt.gs_adjustment(valid_coordinates, pixel_coordinates, visibility_filter, invDepth,
                                           mono_invdepth,
-                                          transformed_positions, gaussians, viewpoint_cam,radii)
+                                          transformed_positions, gaussians, viewpoint_cam, radii)
 
             # Densification
             if iteration < opt.densify_until_iter:
