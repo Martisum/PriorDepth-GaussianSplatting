@@ -248,7 +248,7 @@ def gs_adjustment(valid_coordinates, pixel_coordinates, visibility_filter, invDe
             # 易错点，检查是否变成了一维张量 (3,)，如果是，可以使用 unsqueeze 恢复为二维张量
             if toadd_gaussian_xyz.ndimension() == 1:
                 toadd_gaussian_xyz = toadd_gaussian_xyz.unsqueeze(0)  # 恢复为 (1, 3)
-            print(toadd_gaussian_xyz.shape)
+            # print(toadd_gaussian_xyz.shape)
             toadd_x_coords = toadd_gaussian_xyz[:, 0]  # 提取相机坐标系的 x 坐标
             toadd_y_coords = toadd_gaussian_xyz[:, 1]  # 提取相机坐标系的 y 坐标
             # 这里求出来的toadd_z_coords，是相机坐标系下应该有的深度。需要变换为世界坐标系的深度，才能修改进高斯体
@@ -261,8 +261,16 @@ def gs_adjustment(valid_coordinates, pixel_coordinates, visibility_filter, invDe
             toadd_world_xyz = CtoW(viewpoint_cam.R, viewpoint_cam.T, toadd_cam_xyz, gaussians)
 
             GaussianModel.set_z = set_z
+
             new_z = toadd_world_xyz[:, 2].squeeze()
-            gaussians.set_z(new_z, toadd_gaussian_indices)  # 这里因为要改高斯体了，所以需要使用绝对的编号
+            new_z_mask = new_z >= 0
+            if torch.all(~new_z_mask):
+                print("No new_z is >0, considering throwing all new_z!")
+            else:
+                new_z = new_z[new_z_mask]  # 仍然是 (M,)
+                toadd_gaussian_indices = toadd_gaussian_indices[new_z_mask]  # 仍然是 (M,1)
+                print(new_z.shape)
+                gaussians.set_z(new_z, toadd_gaussian_indices)  # 这里因为要改高斯体了，所以需要使用绝对的编号
             # for idx, ta_gs_xyz in enumerate(toadd_gaussian_xyz):
             #     # 打印编号和深度信息TransWld_Coor和Wld_Coor应该相近，Cam_Coor高斯体相机坐标系坐标，
             #     print(f"Gaussian number {toadd_gaussian_indices[idx]} - Cam_Coor: {ta_gs_xyz} - "

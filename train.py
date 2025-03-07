@@ -254,6 +254,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # Gaussian Optimization Module（可能这一步要放在致密化之前，因为致密化改变了高斯体个数，使得渲染结果的可见性和高斯体总数对不上）
             # is_depth_available = False
             if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
+            # if is_depth_available:
                 visible_gaussian_indices = visibility_filter.squeeze()
                 # visible_gaussians和transformed_positions下标都不是高斯体编号！
                 visible_gaussians = gaussians.get_xyz[visible_gaussian_indices]
