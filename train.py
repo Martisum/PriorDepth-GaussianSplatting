@@ -145,36 +145,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], \
             render_pkg["visibility_filter"], render_pkg["radii"]
 
-        # gs_body = []  # 用来存储筛选出来的对此像素有影响的所有高斯体
-        # r_image_height, r_image_width = image.shape[-2:]
-        # h_step, w_step = int(r_image_height * 0.1), int(r_image_width * 0.1)  # 只枚举10%的图片，全部枚举太费时间
-        # for h in range(0, r_image_height, h_step):
-        #     for w in range(0, r_image_width, w_step):
-        #         # 筛选出对这个像素有影响的所有高斯体
-        #         for gs_idx in visibility_filter:
-        #             gs_idx = int(gs_idx.item())
-        #             # 变换此高斯点坐标到相机坐标系，从而提取深度
-        #             R_torch = torch.tensor(viewpoint_cam.R, dtype=torch.float32, device=gaussians.get_xyz.device)
-        #             T_torch = torch.tensor(viewpoint_cam.T, dtype=torch.float32, device=gaussians.get_xyz.device)
-        #             gs_cam_point = (R_torch @ gaussians.get_xyz[gs_idx].T + T_torch).flatten()
-        #             # 检查是否存在负深度，保证变换正确
-        #             if gs_cam_point[2].item() <= 0:
-        #                 print(f"det(R)={torch.det(R_torch)},RT*R={R_torch.T @ R_torch}")
-        #                 print(f"error z{gs_cam_point[2].item()}")
-        #             # 归一化设备坐标
-        #             x_n, y_n = gs_cam_point[0].item() / gs_cam_point[2].item(), gs_cam_point[1].item() / gs_cam_point[
-        #                 2].item()
-        #             # 求出像素平面坐标
-        #             u = (x_n / (2 * np.tan(viewpoint_cam.FoVx / 2))) * r_image_width + (r_image_width / 2)
-        #             v = (y_n / (2 * np.tan(viewpoint_cam.FoVy / 2))) * r_image_height + (r_image_height / 2)
-        #             if u > 0 and u < r_image_width and v > 0 and v < r_image_height:
-        #                 if (w - u) ** 2 + (h - v) ** 2 <= radii[gs_idx].item() ** 2:
-        #                     gs_body.append(Gaussian_Body(index=gs_idx, depth=gs_cam_point[2].item(), pixel=(u, v),
-        #                                                  radius=radii[gs_idx].item(),
-        #                                                  opacity=gaussians.get_opacity[gs_idx].item()))
-        #
-        #         print("end")
-
         if viewpoint_cam.alpha_mask is not None:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
@@ -225,7 +195,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     {"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
                 progress_bar.update(10)
 
-                if iteration>2000 and ema_loss_for_log<0.02:
+                if iteration > 2000 and ema_loss_for_log < 0.02:
                     loss_list.append(ema_loss_for_log)
                     # 清空之前的图像，防止重叠
                     plt.clf()
@@ -255,23 +225,35 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # is_depth_available = False
             if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
             # if is_depth_available:
-                visible_gaussian_indices = visibility_filter.squeeze()
-                # visible_gaussians和transformed_positions下标都不是高斯体编号！
-                visible_gaussians = gaussians.get_xyz[visible_gaussian_indices]
-                # 变换此高斯点坐标到相机坐标系，从而提取深度
-                transformed_positions = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, visible_gaussians, gaussians)
+                # 变换所有高斯点坐标到相机坐标系，从而提取深度
+                GaussianOpt.Cam_Coordinate = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, gaussians.get_xyz,
+                                                              gaussians)
+
+                # # 转换为 NumPy 数组并降采样
+                # Cam_Coordinate = GaussianOpt.Cam_Coordinate.cpu().numpy()
+                # sample_rate = 5  # 每 5 个点取 1 个
+                # Cam_Coordinate = Cam_Coordinate[::sample_rate]
+                # # 提取 x, y, z
+                # x, y, z = Cam_Coordinate[:, 0], Cam_Coordinate[:, 1], Cam_Coordinate[:, 2]
+                # # 创建 3D 图像
+                # fig = plt.figure(figsize=(10, 7))
+                # ax = fig.add_subplot(111, projection='3d')
+                # # 使用 scatter 而不是 bar3d（更快）
+                # ax.scatter(x, y, z, c=z, cmap='viridis', s=10)
+                # # 设置坐标轴标签
+                # ax.set_xlabel("X")
+                # ax.set_ylabel("Y")
+                # ax.set_zlabel("Z")
+                # ax.set_title("优化后的 3D 可视化")
+                # plt.show()
+                # input()
 
                 # 透视投影，建立相机坐标和像素坐标上的关系，从而找到对应像素都有哪些高斯体
-                pixel_coordinates = GaussianOpt.PerspectiveProj(image, viewpoint_cam.FoVx, viewpoint_cam.FoVy,
-                                                                transformed_positions)
+                GaussianOpt.PerspectiveProj(image, viewpoint_cam.FoVx, viewpoint_cam.FoVy, GaussianOpt.Cam_Coordinate)
+                # 像素坐标有效性检查，选择出有效的，可见的高斯体
+                GaussianOpt.valid_pixel_filter(image, invDepth, mono_invdepth, visibility_filter.squeeze())
 
-                # 像素坐标有效性检查，检查结果是返回一个包含T/F的一维张量，借此筛选出对渲染图像有影响的高斯体
-                valid_coordinates = GaussianOpt.valid_pixel_filter(image, pixel_coordinates, invDepth,
-                                                                   mono_invdepth)  # 合并四个条件，得到有效的像素坐标
-
-                GaussianOpt.gs_adjustment(valid_coordinates, pixel_coordinates, visibility_filter, invDepth,
-                                          mono_invdepth,
-                                          transformed_positions, gaussians, viewpoint_cam, radii)
+                GaussianOpt.gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam)
 
             # Densification
             if iteration < opt.densify_until_iter:
