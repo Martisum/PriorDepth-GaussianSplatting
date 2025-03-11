@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 
 fail_cnt = 0
 EPSILON = 1e-6  # 极小量
+MAX_LENGTH_TABLE = 100_0000  # 最小二乘法数据上限
 
 VALID_GS_IDX = torch.zeros(())  # 有效的高斯编号
 Linear_InvDepth = torch.zeros(())  # 线性化的渲染深度
@@ -14,7 +15,9 @@ Linear_MonoDepth = torch.zeros(())  # 线性化的先验深度
 Pixel_Coordinate = torch.zeros(())  # 高斯体中心坐标对应的像素坐标
 Cam_Coordinate = torch.zeros(())  # 高斯体转化为相机坐标系下的坐标
 
-Feature_Target_Table = torch.zeros((0, 2))  # 存储了历史上所有符合条件的数对，尽量扩充最小二乘法的数据
+Feature_Target_Table = torch.zeros((MAX_LENGTH_TABLE, 2), dtype=torch.float32,
+                                   device='cuda')  # 存储了历史上所有符合条件的数对，尽量扩充最小二乘法的数据
+FT_Index = 0  # 特征数据表需要维护的下标
 
 
 def initialize():
@@ -219,6 +222,31 @@ def linearization(depth_image, proj_matrix):
     return -proj_matrix[2, 2] / (depth_image - proj_matrix[2, 3] + EPSILON)
 
 
+def update_feature_target_table(tmp_pair):
+    """
+        循环队列更新 Feature_Target_Table，确保其大小不会超过 max_length。
+        如果超过上限，则从头开始覆盖最早的数据。
+
+        Args:
+            tmp_pair (Tensor): (N, 2) 的新增数据
+
+        Returns:
+            None,更新Feature_Target_Table和FT_Index
+    """
+    global Feature_Target_Table, FT_Index, MAX_LENGTH_TABLE
+    add_length = tmp_pair.shape[0]  # 新增数据的行数
+    if FT_Index + add_length <= MAX_LENGTH_TABLE:
+        Feature_Target_Table[FT_Index:FT_Index + add_length, :] = tmp_pair
+        FT_Index = FT_Index + add_length
+    else:
+        # 先填充到末尾，再从头开始覆盖
+        end_part = MAX_LENGTH_TABLE - FT_Index
+        Feature_Target_Table[FT_Index:MAX_LENGTH_TABLE, :] = tmp_pair[:end_part, :]  # 填充到末尾
+        start_part = add_length - end_part
+        Feature_Target_Table[:add_length - end_part, :] = tmp_pair[end_part:, :]  # 从头覆盖
+        FT_Index = start_part  # 确保 index 重新回到合法范围
+
+
 def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam):
     """
         根据阈值对高斯体做增加和删除操作
@@ -250,10 +278,10 @@ def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam):
 
     device = torch.device('cuda:0')
     Feature_Target_Table = Feature_Target_Table.to(device)  # to(device)转移到相同设备
-    tmp_pair = torch.cat((valid_inv_depth, Cam_Coordinate[:, 2][VALID_GS_IDX].unsqueeze(dim=1)), dim=1)  # [:, 2]取相机系Z坐标，[VALID_GS_IDX]取合适高斯体，unsqueeze(dim=1)增加一个维度
-    Feature_Target_Table = torch.cat((Feature_Target_Table, tmp_pair), dim=0)
-    Feature_Target_Table, _ = torch.unique(Feature_Target_Table, dim=0, return_inverse=True)
-    k, b, isSuccess = least_squares(Feature_Target_Table[:,0:1],Feature_Target_Table[:,1:2])
+    tmp_pair = torch.cat((valid_inv_depth, Cam_Coordinate[:, 2][VALID_GS_IDX].unsqueeze(dim=1)),
+                         dim=1)  # [:, 2]取相机系Z坐标，[VALID_GS_IDX]取合适高斯体，unsqueeze(dim=1)增加一个维度
+    update_feature_target_table(tmp_pair)
+    k, b, isSuccess = least_squares(Feature_Target_Table[:, 0:1], Feature_Target_Table[:, 1:2])
     if isSuccess:
         valid_inv_depth = k * valid_inv_depth + b
         valid_monoinv_depth = k * valid_monoinv_depth + b
