@@ -1,8 +1,15 @@
 import subprocess
 
+isEVAL = True
 # output保存路径
-model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\comp_gs1'
+model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\3f9814fb-4'
 # model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\eval_origin'
+
+if isEVAL:
+    command = f'python render.py -m {model_path}'
+    subprocess.run(command, shell=True)
+    command = f'python metrics.py -m {model_path}'
+    subprocess.run(command, shell=True)
 
 # 脚本执行
 command = f'SIBR_gaussianViewer_app.exe -m {model_path}'

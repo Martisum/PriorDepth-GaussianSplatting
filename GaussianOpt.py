@@ -18,6 +18,7 @@ Cam_Coordinate = torch.zeros(())  # 高斯体转化为相机坐标系下的坐�
 Feature_Target_Table = torch.zeros((MAX_LENGTH_TABLE, 2), dtype=torch.float32,
                                    device='cuda')  # 存储了历史上所有符合条件的数对，尽量扩充最小二乘法的数据
 FT_Index = 0  # 特征数据表需要维护的下标
+LEA_k, LEA_b = 0, 0  # 最小二乘法计算出的k和b
 
 
 def initialize():
@@ -193,6 +194,7 @@ def set_z(self, new_z, indices):
 def opacity_modulate(gaussians, invDepth, mono_invdepth, pixel_coordinates, valid_coordinates, gs_idx):
     """
         根据渲染深度和先验深度，对对应的高斯体做不透明度调制
+        此模块应该放在高斯优化模块之后
 
         Args:
             gaussians GaussianModel:高斯模型
@@ -203,6 +205,9 @@ def opacity_modulate(gaussians, invDepth, mono_invdepth, pixel_coordinates, vali
 
         Returns:
             void
+    """
+    """
+    VALID_GS_IDX筛选合适的高斯体
     """
     print("none")
 
@@ -252,13 +257,15 @@ def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam):
         根据阈值对高斯体做增加和删除操作
 
         Args:
-            valid_coordinates :平面像素坐标
-
+            invDepth :渲染深度图
+            mono_invdepth :先验深度图
+            gaussians :高斯模型，包含所有高斯体的信息
+            viewpoint_cam :场景相机模型
 
         Returns:
             void
     """
-    global EPSILON, Linear_InvDepth, Linear_MonoDepth, VALID_GS_IDX, Feature_Target_Table
+    global EPSILON, Linear_InvDepth, Linear_MonoDepth, VALID_GS_IDX, Feature_Target_Table,LEA_k,LEA_b
     if VALID_GS_IDX.numel() == 0:
         # print("no VALID_GS_IDX!")
         return
@@ -281,13 +288,15 @@ def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam):
     tmp_pair = torch.cat((valid_inv_depth, Cam_Coordinate[:, 2][VALID_GS_IDX].unsqueeze(dim=1)),
                          dim=1)  # [:, 2]取相机系Z坐标，[VALID_GS_IDX]取合适高斯体，unsqueeze(dim=1)增加一个维度
     update_feature_target_table(tmp_pair)
-    k, b, isSuccess = least_squares(Feature_Target_Table[:, 0:1], Feature_Target_Table[:, 1:2])
+    LEA_k, LEA_b, isSuccess = least_squares(Feature_Target_Table[:, 0:1], Feature_Target_Table[:, 1:2])
     if isSuccess:
-        valid_inv_depth = k * valid_inv_depth + b
-        valid_monoinv_depth = k * valid_monoinv_depth + b
+        valid_inv_depth = LEA_k * valid_inv_depth + LEA_b
+        valid_monoinv_depth = LEA_k * valid_monoinv_depth + LEA_b
     else:
         print("failed to calculate least_square")
         return
+
+    # 这里添加不透明度调制
 
     abs_diff_mask = (torch.abs(valid_inv_depth - valid_monoinv_depth) > 8).squeeze(1)
     if abs_diff_mask.sum() == 0:  # 全为false则无需继续

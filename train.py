@@ -195,19 +195,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     {"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
                 progress_bar.update(10)
 
-                if iteration > 2000 and ema_loss_for_log < 0.02:
-                    loss_list.append(ema_loss_for_log)
-                    # 清空之前的图像，防止重叠
-                    plt.clf()
-                    # 绘制损失曲线
-                    plt.plot(range(1, len(loss_list) + 1), loss_list, label="Training Loss", color='blue')
-                    plt.xlabel("Epoch")
-                    plt.ylabel("Loss")
-                    plt.title("Training Loss Curve (Dynamic Update)")
-                    plt.legend()
-                    plt.grid()
-                    # 短暂暂停，允许 matplotlib 更新
-                    plt.pause(0.1)
+                # if iteration > 2000 and ema_loss_for_log < 0.02:
+                #     loss_list.append(ema_loss_for_log)
+                #     # 清空之前的图像，防止重叠
+                #     plt.clf()
+                #     # 绘制损失曲线
+                #     plt.plot(range(1, len(loss_list) + 1), loss_list, label="Training Loss", color='blue')
+                #     plt.xlabel("Epoch")
+                #     plt.ylabel("Loss")
+                #     plt.title("Training Loss Curve (Dynamic Update)")
+                #     plt.legend()
+                #     plt.grid()
+                #     # 短暂暂停，允许 matplotlib 更新
+                #     plt.pause(0.1)
 
             if iteration == opt.iterations:
                 progress_bar.close()
@@ -222,9 +222,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 scene.save(iteration)
 
             # Gaussian Optimization Module（可能这一步要放在致密化之前，因为致密化改变了高斯体个数，使得渲染结果的可见性和高斯体总数对不上）
-            # is_depth_available = False
-            if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
-            # if is_depth_available:
+            is_depth_available = False
+            # if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
+            if is_depth_available:
                 # 变换所有高斯点坐标到相机坐标系，从而提取深度
                 GaussianOpt.Cam_Coordinate = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, gaussians.get_xyz,
                                                               gaussians)
