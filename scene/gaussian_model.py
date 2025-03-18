@@ -448,11 +448,14 @@ class GaussianModel:
 
         prune_filter = torch.cat(
             (selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+        # prune_points中prune_filter为true的就是要删除掉的点
         self.prune_points(prune_filter)
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
-        # Extract points that satisfy the gradient condition
+        # Extract points that satisfy the gradient condition 用于根据 condition 选择元素，这里是根据torch.norm(grads, dim=-1) >= grad_threshold计算
+        # 而norm是计算范数，也就是把三个方向的梯度转成一个带方向的梯度
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
+        # logical_and对两个布尔张量进行逐元素 逻辑与（AND） 运算
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling,
                                                         dim=1).values <= self.percent_dense * scene_extent)
@@ -478,7 +481,7 @@ class GaussianModel:
             :param extent: 场景的尺寸范围，用于评估高斯分布的大小是否合适。
             :param max_screen_size: 最大屏幕尺寸阈值，用于修剪过大的高斯分布。
         """
-        grads = self.xyz_gradient_accum / self.denom
+        grads = self.xyz_gradient_accum / self.denom  # 计算每个高斯体平均梯度
         grads[grads.isnan()] = 0.0
 
         self.tmp_radii = radii
@@ -497,7 +500,8 @@ class GaussianModel:
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
+        # 对梯度进行累加
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, :2], dim=-1,
                                                              keepdim=True)
-        self.denom[update_filter] += 1
+        self.denom[update_filter] += 1  # 因为肯定会重复统计很多高斯体，比如100号被统计了20次，那肯定要除以20才是原来那个高斯体的平均梯度
 

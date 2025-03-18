@@ -2,7 +2,7 @@ import subprocess
 
 isEVAL = True
 # output保存路径
-model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\3f9814fb-4'
+model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\9131a5e0-7'
 # model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\eval_origin'
 
 if isEVAL:

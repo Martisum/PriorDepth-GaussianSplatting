@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 fail_cnt = 0
 EPSILON = 1e-6  # 极小量
-MAX_LENGTH_TABLE = 100_0000  # 最小二乘法数据上限
+MAX_LENGTH_TABLE = 10_0000  # 最小二乘法数据上限
 
 VALID_GS_IDX = torch.zeros(())  # 有效的高斯编号
 Linear_InvDepth = torch.zeros(())  # 线性化的渲染深度
@@ -207,6 +207,12 @@ def opacity_modulate(gaussians, invDepth, mono_invdepth, pixel_coordinates, vali
             void
     """
     """
+    新方案的主要思路：
+    先看能不能找到删除高斯体的函数，要是不行，就直接把高斯体的不透明度给改成全透明，相当于删除了
+    不能使用移动高斯体的方案，因为每个视图的先验深度并不一样，这么做可能会把高斯体移来移去。也就是说，先验深度后面的高斯体不能动，因为有可能这个高斯体就是正确的
+    但是先验深度前面的高斯体肯定是错误的，要删掉。
+    一定要验证一下densification_postfix函数有没有真正添加了高斯体
+    
     VALID_GS_IDX筛选合适的高斯体
     """
     print("none")
@@ -240,6 +246,10 @@ def update_feature_target_table(tmp_pair):
     """
     global Feature_Target_Table, FT_Index, MAX_LENGTH_TABLE
     add_length = tmp_pair.shape[0]  # 新增数据的行数
+    if add_length > MAX_LENGTH_TABLE:  # MAX_LENGTH_TABLE比较小的时候可能会出现tmp_pair本身就超过了MAX_LENGTH_TABLE，导致出现错误
+        tmp_pair = tmp_pair[:MAX_LENGTH_TABLE, :]  # 仅保留前 MAX_LENGTH_TABLE 个数据
+        add_length = MAX_LENGTH_TABLE  # 重新计算插入长度
+
     if FT_Index + add_length <= MAX_LENGTH_TABLE:
         Feature_Target_Table[FT_Index:FT_Index + add_length, :] = tmp_pair
         FT_Index = FT_Index + add_length
@@ -252,7 +262,7 @@ def update_feature_target_table(tmp_pair):
         FT_Index = start_part  # 确保 index 重新回到合法范围
 
 
-def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam):
+def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii):
     """
         根据阈值对高斯体做增加和删除操作
 
@@ -265,7 +275,7 @@ def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam):
         Returns:
             void
     """
-    global EPSILON, Linear_InvDepth, Linear_MonoDepth, VALID_GS_IDX, Feature_Target_Table,LEA_k,LEA_b
+    global EPSILON, Linear_InvDepth, Linear_MonoDepth, VALID_GS_IDX, Feature_Target_Table, LEA_k, LEA_b
     if VALID_GS_IDX.numel() == 0:
         # print("no VALID_GS_IDX!")
         return
@@ -298,7 +308,8 @@ def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam):
 
     # 这里添加不透明度调制
 
-    abs_diff_mask = (torch.abs(valid_inv_depth - valid_monoinv_depth) > 8).squeeze(1)
+    abs_diff_mask = (torch.abs(Cam_Coordinate[:, 2][VALID_GS_IDX].unsqueeze(dim=1) - valid_monoinv_depth) > (radii[VALID_GS_IDX]+5).unsqueeze(dim=1)).squeeze(
+        1)
     if abs_diff_mask.sum() == 0:  # 全为false则无需继续
         return
     VALID_GS_IDX = VALID_GS_IDX[abs_diff_mask]  # 更新需要更改的高斯体的下标

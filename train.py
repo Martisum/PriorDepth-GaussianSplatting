@@ -222,38 +222,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 scene.save(iteration)
 
             # Gaussian Optimization Module（可能这一步要放在致密化之前，因为致密化改变了高斯体个数，使得渲染结果的可见性和高斯体总数对不上）
-            is_depth_available = False
+            # is_depth_available = False
             # if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
             if is_depth_available:
                 # 变换所有高斯点坐标到相机坐标系，从而提取深度
                 GaussianOpt.Cam_Coordinate = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, gaussians.get_xyz,
                                                               gaussians)
 
-                # # 转换为 NumPy 数组并降采样
-                # Cam_Coordinate = GaussianOpt.Cam_Coordinate.cpu().numpy()
-                # sample_rate = 5  # 每 5 个点取 1 个
-                # Cam_Coordinate = Cam_Coordinate[::sample_rate]
-                # # 提取 x, y, z
-                # x, y, z = Cam_Coordinate[:, 0], Cam_Coordinate[:, 1], Cam_Coordinate[:, 2]
-                # # 创建 3D 图像
-                # fig = plt.figure(figsize=(10, 7))
-                # ax = fig.add_subplot(111, projection='3d')
-                # # 使用 scatter 而不是 bar3d（更快）
-                # ax.scatter(x, y, z, c=z, cmap='viridis', s=10)
-                # # 设置坐标轴标签
-                # ax.set_xlabel("X")
-                # ax.set_ylabel("Y")
-                # ax.set_zlabel("Z")
-                # ax.set_title("优化后的 3D 可视化")
-                # plt.show()
-                # input()
-
                 # 透视投影，建立相机坐标和像素坐标上的关系，从而找到对应像素都有哪些高斯体
                 GaussianOpt.PerspectiveProj(image, viewpoint_cam.FoVx, viewpoint_cam.FoVy, GaussianOpt.Cam_Coordinate)
                 # 像素坐标有效性检查，选择出有效的，可见的高斯体
                 GaussianOpt.valid_pixel_filter(image, invDepth, mono_invdepth, visibility_filter.squeeze())
 
-                GaussianOpt.gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam)
+                GaussianOpt.gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii)
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -264,6 +245,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    # 第一个参数是设置好的梯度阈值（论文5.2第三段） 第二个参数是需要删除的最小不透明度（低于此就要删除高斯体了）
+                    # 第三个参数是相机尺度参数，衡量了相机的中心点到最远相机的距离，第四个参数就是阈值
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold,
                                                 radii)
 

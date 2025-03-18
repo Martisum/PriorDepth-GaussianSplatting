@@ -47,10 +47,10 @@ class SceneInfo(NamedTuple):
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
-        cam_centers = np.hstack(cam_centers)
-        avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)
+        cam_centers = np.hstack(cam_centers)  # 形状变为 (3, N)，其中 N 是相机数量
+        avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)  # 计算所有相机中心的平均值
         center = avg_cam_center
-        dist = np.linalg.norm(cam_centers - center, axis=0, keepdims=True)
+        dist = np.linalg.norm(cam_centers - center, axis=0, keepdims=True)  # 计算每个相机到中心的距离
         diagonal = np.max(dist)
         return center.flatten(), diagonal
 
