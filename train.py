@@ -223,20 +223,33 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Gaussian Optimization Module（可能这一步要放在致密化之前，因为致密化改变了高斯体个数，使得渲染结果的可见性和高斯体总数对不上）
             # is_depth_available = False
-            # if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
-            if is_depth_available:
-                # 变换所有高斯点坐标到相机坐标系，从而提取深度
+            if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
+            # if is_depth_available:
+                gaussians.tmp_radii = radii  # 先行赋值，防止后面出错
+                # 变换所有高斯点坐标到相机坐标系，从而提取深度，最后返回相机系坐标Cam_Coordinate
                 GaussianOpt.Cam_Coordinate = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, gaussians.get_xyz,
                                                               gaussians)
 
-                # 透视投影，建立相机坐标和像素坐标上的关系，从而找到对应像素都有哪些高斯体
+                # 透视投影，建立相机坐标和像素坐标上的关系，从而找到对应像素都有哪些高斯体，得到每个高斯体对应像素坐标Pixel_Coordinate
                 GaussianOpt.PerspectiveProj(image, viewpoint_cam.FoVx, viewpoint_cam.FoVy, GaussianOpt.Cam_Coordinate)
-                # 像素坐标有效性检查，选择出有效的，可见的高斯体
+                # 像素坐标有效性检查，选择出有效的，可见的高斯体，得到可用的高斯体编号VALID_GS_IDX
                 GaussianOpt.valid_pixel_filter(image, invDepth, mono_invdepth, visibility_filter.squeeze())
 
-                GaussianOpt.gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii)
+                # 深度信息处理
+                GaussianOpt.Linear_InvDepth = GaussianOpt.linearization(invDepth,
+                                                                        viewpoint_cam.projection_matrix)  # 将非线性的深度线性化
+                GaussianOpt.Linear_MonoDepth = GaussianOpt.linearization(mono_invdepth, viewpoint_cam.projection_matrix)
+                GaussianOpt.depth_normalization()  # 将线性深度归一化
 
-            # Densification
+                GaussianOpt.floatingObj_prune(gaussians, scene.cameras_extent)
+                # GaussianOpt.gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii)
+
+            # render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp,
+            #                     separate_sh=SPARSE_ADAM_AVAILABLE)
+            # image, visibility_filter, radii = render_pkg["render"], \
+            #     render_pkg["visibility_filter"], render_pkg["radii"]
+
+            # Densification 致密化和高斯优化模块不可以放在一起，不然会直接爆掉。因为高斯优化模块改变了高斯体，而这些记录并不在致密化中
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter],

@@ -9,11 +9,20 @@ fail_cnt = 0
 EPSILON = 1e-6  # 极小量
 MAX_LENGTH_TABLE = 10_0000  # 最小二乘法数据上限
 
-VALID_GS_IDX = torch.zeros(())  # 有效的高斯编号
+#---------- 总长为图像像素总数（二维） ----------
 Linear_InvDepth = torch.zeros(())  # 线性化的渲染深度
-Linear_MonoDepth = torch.zeros(())  # 线性化的先验深度
+Linear_MonoDepth = torch.zeros(())  # 线性化的先验深度，这里还是二维的
+
+#---------- 总长为全体高斯体 ----------
 Pixel_Coordinate = torch.zeros(())  # 高斯体中心坐标对应的像素坐标
 Cam_Coordinate = torch.zeros(())  # 高斯体转化为相机坐标系下的坐标
+
+#---------- 总长为有效高斯体 ----------
+VALID_GS_IDX = torch.zeros(())  # 有效的高斯编号
+Norm_InvDepth = torch.zeros(())  # 这个是一维的，存的是坐标对应的深度。这个是最小二乘之后转为相机系的深度
+Norm_MonoDepth = torch.zeros(())
+Norm_Pix_x = torch.zeros(())  # 像素坐标的坐标值
+Norm_Pix_y = torch.zeros(())
 
 Feature_Target_Table = torch.zeros((MAX_LENGTH_TABLE, 2), dtype=torch.float32,
                                    device='cuda')  # 存储了历史上所有符合条件的数对，尽量扩充最小二乘法的数据
@@ -262,6 +271,65 @@ def update_feature_target_table(tmp_pair):
         FT_Index = start_part  # 确保 index 重新回到合法范围
 
 
+def depth_normalization():
+    """
+        利用最小二乘归一化深度，输出归一化深度的表
+
+        Args:
+           NULL
+
+        Returns:
+            void
+    """
+    global LEA_k, LEA_b, Feature_Target_Table, Pixel_Coordinate, VALID_GS_IDX, Norm_MonoDepth, Norm_InvDepth, Norm_Pix_x, Norm_Pix_y
+    Norm_Pix_x = Pixel_Coordinate[VALID_GS_IDX][:, 1].to(torch.long)  # [VALID_GS_IDX]筛选出合适高斯体的像素坐标，[:, 1]取横坐标，再转整形
+    Norm_Pix_y = Pixel_Coordinate[VALID_GS_IDX][:, 0].to(torch.long)
+    valid_inv_depth = Linear_InvDepth[0, Norm_Pix_x, Norm_Pix_y].view(-1, 1)  # 索引出渲染深度的具体值
+    valid_monoinv_depth = Linear_MonoDepth[0, Norm_Pix_x, Norm_Pix_y].view(-1, 1)
+
+    device = torch.device('cuda:0')
+    Feature_Target_Table = Feature_Target_Table.to(device)  # to(device)转移到相同设备
+    tmp_pair = torch.cat((valid_inv_depth, Cam_Coordinate[:, 2][VALID_GS_IDX].unsqueeze(dim=1)),
+                         dim=1)  # [:, 2]取相机系Z坐标，[VALID_GS_IDX]取合适高斯体，unsqueeze(dim=1)增加一个维度
+    update_feature_target_table(tmp_pair)
+    # 最小二乘法求出k和b，最后计算出归一化的深度
+    LEA_k, LEA_b, isSuccess = least_squares(Feature_Target_Table[:, 0:1], Feature_Target_Table[:, 1:2])
+    if isSuccess:
+        Norm_InvDepth = LEA_k * valid_inv_depth + LEA_b
+        Norm_MonoDepth = LEA_k * valid_monoinv_depth + LEA_b
+    print("end")
+
+
+def floatingObj_prune(gaussians, cam_extent):
+    """
+        删除近相机漂浮物
+
+        Args:
+            invDepth :渲染深度图
+            mono_invdepth :先验深度图
+            gaussians :高斯模型，包含所有高斯体的信息
+            cam_extent :场景相机尺度，用于动态调整阈值
+
+        Returns:
+            void
+    """
+    global VALID_GS_IDX, Norm_Pix_x, Norm_Pix_y, Norm_InvDepth, Norm_MonoDepth
+    if VALID_GS_IDX.numel() == 0:
+        # print("no VALID_GS_IDX!")
+        return
+    diff_mask = ((Norm_MonoDepth - Norm_InvDepth) > cam_extent).squeeze()
+    diff_mask = torch.logical_and(diff_mask, Cam_Coordinate[:, 2][
+        VALID_GS_IDX].squeeze() + 0.5 * cam_extent < Norm_InvDepth.squeeze())
+    if diff_mask.sum() == 0:  # 全为false则无需继续
+        return
+
+    selected_gs_idx = VALID_GS_IDX[diff_mask.squeeze()]
+    prune_filter = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.bool, device=selected_gs_idx.device)
+    prune_filter[selected_gs_idx] = True
+    gaussians.prune_points(prune_filter)
+    # print("enmd")
+
+
 def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii):
     """
         根据阈值对高斯体做增加和删除操作
@@ -308,7 +376,8 @@ def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii):
 
     # 这里添加不透明度调制
 
-    abs_diff_mask = (torch.abs(Cam_Coordinate[:, 2][VALID_GS_IDX].unsqueeze(dim=1) - valid_monoinv_depth) > (radii[VALID_GS_IDX]+5).unsqueeze(dim=1)).squeeze(
+    abs_diff_mask = (torch.abs(Cam_Coordinate[:, 2][VALID_GS_IDX].unsqueeze(dim=1) - valid_monoinv_depth) > (
+            radii[VALID_GS_IDX] + 5).unsqueeze(dim=1)).squeeze(
         1)
     if abs_diff_mask.sum() == 0:  # 全为false则无需继续
         return
