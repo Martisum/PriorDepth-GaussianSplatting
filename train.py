@@ -223,8 +223,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Gaussian Optimization Module（可能这一步要放在致密化之前，因为致密化改变了高斯体个数，使得渲染结果的可见性和高斯体总数对不上）
             # is_depth_available = False
-            if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
+            # if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
             # if is_depth_available:
+            if is_depth_available and opt.densify_until_iter + 12500 < iteration:
                 gaussians.tmp_radii = radii  # 先行赋值，防止后面出错
                 # 变换所有高斯点坐标到相机坐标系，从而提取深度，最后返回相机系坐标Cam_Coordinate
                 GaussianOpt.Cam_Coordinate = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, gaussians.get_xyz,
@@ -239,9 +240,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 GaussianOpt.Linear_InvDepth = GaussianOpt.linearization(invDepth,
                                                                         viewpoint_cam.projection_matrix)  # 将非线性的深度线性化
                 GaussianOpt.Linear_MonoDepth = GaussianOpt.linearization(mono_invdepth, viewpoint_cam.projection_matrix)
+
+                # plt.scatter(mono_invdepth.detach().cpu().numpy().flatten(), GaussianOpt.Linear_MonoDepth.detach().cpu().numpy().flatten(), alpha=0.5, s=1)
+                # plt.xlabel("Original mono_invdepth")
+                # plt.ylabel("Converted Linear_MonoDepth")
+                # plt.title("mono_invdepth vs. Linear_MonoDepth")
+                # plt.show(block=False)  # 非阻塞显示
+                # plt.pause(0.1)  # 短暂暂停，确保窗口刷新
+                # input("Press Enter to continue...")  # 等待手动关闭
+                # plt.close()  # 关闭窗口
+                # GaussianOpt.visualize_inv_depth(GaussianOpt.Linear_MonoDepth.squeeze())
                 GaussianOpt.depth_normalization()  # 将线性深度归一化
 
-                GaussianOpt.floatingObj_prune(gaussians, scene.cameras_extent)
+                GaussianOpt.floatingObj_prune(gaussians, scene.cameras_extent, radii)
                 # GaussianOpt.gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii)
 
             # render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp,
@@ -282,6 +293,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+    
 
 
 def prepare_output_and_logger(args):

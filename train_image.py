@@ -2,7 +2,7 @@ import os
 import subprocess
 
 # 图片集所在的绝对路径
-images_path = r"D:\Work\AI\data\cwq\input"
+images_path = r"D:\Work\AI\data\horn\input"
 depth_anything_path = r"D:\Work\AI\Depth-Anything-V2-main"
 
 # 上一级文件夹所在路径

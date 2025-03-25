@@ -2,7 +2,9 @@ import subprocess
 
 isEVAL = True
 # output保存路径
-model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\9131a5e0-7'
+# model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\eval_newopt2'  # 更改条件，考虑半径信息
+# model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\new_opt1'  # 更改条件前，还是使用的cam_scene
+model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\63ade197-6'  # 更改条件，考虑半径信息但是更换模型
 # model_path = r'D:\Work\AI\PriorDepth-GaussianSplatting\output\eval_origin'
 
 if isEVAL:

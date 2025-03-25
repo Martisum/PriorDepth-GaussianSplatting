@@ -4,6 +4,7 @@ from torch.cuda import device
 from scene import GaussianModel
 import pdb
 import matplotlib.pyplot as plt
+import numpy as np
 
 fail_cnt = 0
 EPSILON = 1e-6  # 极小量
@@ -217,6 +218,7 @@ def opacity_modulate(gaussians, invDepth, mono_invdepth, pixel_coordinates, vali
     """
     """
     新方案的主要思路：
+    目前已经完成了对于渲染深度小于先验深度，且
     先看能不能找到删除高斯体的函数，要是不行，就直接把高斯体的不透明度给改成全透明，相当于删除了
     不能使用移动高斯体的方案，因为每个视图的先验深度并不一样，这么做可能会把高斯体移来移去。也就是说，先验深度后面的高斯体不能动，因为有可能这个高斯体就是正确的
     但是先验深度前面的高斯体肯定是错误的，要删掉。
@@ -239,7 +241,9 @@ def linearization(depth_image, proj_matrix):
 
     """
     global EPSILON
-    return -proj_matrix[2, 2] / (depth_image - proj_matrix[2, 3] + EPSILON)
+    # return -proj_matrix[2, 2] / (depth_image - proj_matrix[2, 3] + EPSILON)
+    return 1 / (depth_image + EPSILON)
+    # return depth_image
 
 
 def update_feature_target_table(tmp_pair):
@@ -294,13 +298,78 @@ def depth_normalization():
     update_feature_target_table(tmp_pair)
     # 最小二乘法求出k和b，最后计算出归一化的深度
     LEA_k, LEA_b, isSuccess = least_squares(Feature_Target_Table[:, 0:1], Feature_Target_Table[:, 1:2])
+    LEA_k,LEA_b=1,0
     if isSuccess:
         Norm_InvDepth = LEA_k * valid_inv_depth + LEA_b
         Norm_MonoDepth = LEA_k * valid_monoinv_depth + LEA_b
-    print("end")
+    # print("end")
 
 
-def floatingObj_prune(gaussians, cam_extent):
+def visualize_inv_depth(invDepth):
+    """
+    可视化逆深度图
+
+    参数:
+    invDepth (numpy.ndarray): 逆深度的二维张量
+    """
+    # 如果 invDepth 是 PyTorch 张量，转换为 NumPy
+    if isinstance(invDepth, torch.Tensor):
+        invDepth = invDepth.detach().cpu().numpy()  # 先移到 CPU 再转 NumPy
+
+    # 处理 NaN 和无穷值
+    invDepth = np.nan_to_num(invDepth, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # 归一化到 0-1 之间，防止数值过大或过小影响可视化
+    # min_val, max_val = np.min(invDepth), np.max(invDepth)
+    # if max_val > min_val:  # 避免除零错误
+    #     norm_invDepth = (invDepth - min_val) / (max_val - min_val)
+    # else:
+    #     norm_invDepth = np.zeros_like(invDepth)  # 全部相同值则显示纯色
+
+    # 绘制图像
+    plt.figure(figsize=(8, 6))
+    plt.imshow(invDepth, cmap='jet', interpolation='nearest')
+    plt.colorbar(label="Linear_MonoDepth Depth")
+    plt.title("Linear_MonoDepth Depth Visualization")
+    plt.axis("off")  # 关闭坐标轴
+    plt.show(block=False)  # 非阻塞显示
+    plt.pause(0.1)  # 短暂暂停，确保窗口刷新
+    input("Press Enter to continue...")  # 等待手动关闭
+    plt.close()  # 关闭窗口
+
+def plot_invdepth_vs_z(Norm_InvDepth, Cam_Z):
+    """
+    绘制 Norm_InvDepth 和相机坐标 Z 之间的散点图
+    :param Norm_InvDepth: 归一化的逆深度，一维张量或数组
+    :param Cam_Z: 相机坐标系中的 Z 值，一维张量或数组
+    """
+    # 转换为 NumPy 数组，确保可以进行绘图
+    Norm_InvDepth = Norm_InvDepth.cpu().numpy() if hasattr(Norm_InvDepth, 'cpu') else np.array(Norm_InvDepth)
+    Cam_Z = Cam_Z.cpu().numpy() if hasattr(Cam_Z, 'cpu') else np.array(Cam_Z)
+
+    # 确保数据不是空的
+    if len(Norm_InvDepth) == 0 or len(Cam_Z) == 0:
+        print("Warning: Empty input data!")
+        return
+
+    # 取前100个点
+    Norm_InvDepth = Norm_InvDepth[:100]
+    Cam_Z = Cam_Z[:100]
+
+    # 绘制散点图
+    plt.figure(figsize=(8, 6))
+    plt.scatter(Norm_InvDepth, Cam_Z, s=10, alpha=0.6, c='blue', edgecolors='none')
+    plt.xlabel("Normalized Inverse Depth")
+    plt.ylabel("Camera Coordinate Z")
+    plt.title("Scatter Plot of Norm_InvDepth vs. Cam_Z")
+    plt.grid(True, linestyle='--', alpha=0.5)
+
+    # 尝试非阻塞显示
+    plt.show(block=False)
+    plt.pause(0.1)
+
+
+def floatingObj_prune(gaussians, cam_extent, radii):
     """
         删除近相机漂浮物
 
@@ -317,9 +386,15 @@ def floatingObj_prune(gaussians, cam_extent):
     if VALID_GS_IDX.numel() == 0:
         # print("no VALID_GS_IDX!")
         return
-    diff_mask = ((Norm_MonoDepth - Norm_InvDepth) > cam_extent).squeeze()
-    diff_mask = torch.logical_and(diff_mask, Cam_Coordinate[:, 2][
-        VALID_GS_IDX].squeeze() + 0.5 * cam_extent < Norm_InvDepth.squeeze())
+    diff_mask = ((Norm_MonoDepth - Norm_InvDepth) > 0.5*cam_extent).squeeze()
+    tmp_diff = Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze() - 0.6 * radii[VALID_GS_IDX]
+
+    # plot_invdepth_vs_z(Norm_InvDepth.squeeze()[:1000], Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze()[:1000])
+    # input()
+
+    # if tmp_diff.min() < 0:
+    #     print("jijiji")
+    diff_mask = torch.logical_and(diff_mask, tmp_diff < Norm_InvDepth.squeeze())
     if diff_mask.sum() == 0:  # 全为false则无需继续
         return
 
@@ -327,7 +402,21 @@ def floatingObj_prune(gaussians, cam_extent):
     prune_filter = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.bool, device=selected_gs_idx.device)
     prune_filter[selected_gs_idx] = True
     gaussians.prune_points(prune_filter)
-    # print("enmd")
+    print(selected_gs_idx.shape)
+    """
+    思路：
+    找到符合如下条件的高斯体中心位置，并删除：
+        A.渲染深度要小于先验深度（足够说明先验深度之前存在高斯体的遮挡）
+        B.渲染深度要在高斯体中或者后（渲染深度如果在高斯体中或者在此高斯体后面，足以说明这个高斯体遮挡了渲染，需要删除）
+    为什么算法有效？
+        假设不满足条件A，那么应该是这个位置存在未补足的细节，而不是选择删除高斯体，应该用其他方法处理。
+        假设不满足条件B，说明渲染深度在高斯体的前面，那么我们无法判断这个高斯体是否正确。在其它视角中，这个高斯体可能是正确的
+        问：如果先验深度面前存在大量遮挡高斯体，你如何保证删除？
+        答：可以肯定的是，每一次迭代都会删掉一定数量的遮挡高斯体。只要迭代的次数足够多，就可以不断地删除这些遮挡的高斯体
+        问：你如何保证不会错误删除？
+        答：如果枚举到的高斯体的深度比渲染深度还要浅，并且先验深度又远大于渲染深度，那么可以认为渲染深度在计算的过程中一定统计了这个高斯体的不透明度，
+            并且这个渲染深度是错的。错误的原因，是这个高斯体一定为阻碍渲染深度做出了贡献，那么它肯定就是近相机漂浮物之一，需要删除
+    """
 
 
 def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii):
