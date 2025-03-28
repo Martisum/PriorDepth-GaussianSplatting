@@ -29,6 +29,7 @@ Feature_Target_Table = torch.zeros((MAX_LENGTH_TABLE, 2), dtype=torch.float32,
                                    device='cuda')  # 存储了历史上所有符合条件的数对，尽量扩充最小二乘法的数据
 FT_Index = 0  # 特征数据表需要维护的下标
 LEA_k, LEA_b = 0, 0  # 最小二乘法计算出的k和b
+Delete_3DGS_CNT = 100  # 随便给个默认数值，大于10就行
 
 
 def initialize():
@@ -382,7 +383,7 @@ def floatingObj_prune(gaussians, cam_extent, radii):
         Returns:
             void
     """
-    global VALID_GS_IDX, Norm_Pix_x, Norm_Pix_y, Norm_InvDepth, Norm_MonoDepth
+    global VALID_GS_IDX, Norm_Pix_x, Norm_Pix_y, Norm_InvDepth, Norm_MonoDepth, Delete_3DGS_CNT
     if VALID_GS_IDX.numel() == 0:
         # print("no VALID_GS_IDX!")
         return
@@ -396,6 +397,7 @@ def floatingObj_prune(gaussians, cam_extent, radii):
     #     print("jijiji")
     diff_mask = torch.logical_and(diff_mask, tmp_diff < Norm_InvDepth.squeeze())
     if diff_mask.sum() == 0:  # 全为false则无需继续
+        Delete_3DGS_CNT = 0
         return
 
     selected_gs_idx = VALID_GS_IDX[diff_mask.squeeze()]
@@ -403,6 +405,7 @@ def floatingObj_prune(gaussians, cam_extent, radii):
     prune_filter[selected_gs_idx] = True
     gaussians.prune_points(prune_filter)
     print(selected_gs_idx.shape)
+    Delete_3DGS_CNT = selected_gs_idx.shape[0]
     """
     思路：
     找到符合如下条件的高斯体中心位置，并删除：

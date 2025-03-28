@@ -190,24 +190,81 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
+            # Gaussian Optimization Module（可能这一步要放在致密化之前，因为致密化改变了高斯体个数，使得渲染结果的可见性和高斯体总数对不上）
+            if iteration == 40000:
+                gs_del_opt_epoch = 0
+                gs_del_opt_mincnt = 0
+                gs_del_total_cnt = 0
+                gs_del_opt_total = len(viewpoint_stack)
+                while gs_del_opt_mincnt < 5 * gs_del_opt_total:
+                    gs_del_opt_mincnt = gs_del_opt_mincnt + 1
+                    torch.cuda.empty_cache()
+                    # 选择随机视角并渲染
+                    if not viewpoint_stack:
+                        viewpoint_stack = scene.getTrainCameras().copy()
+                        viewpoint_indices = list(range(len(viewpoint_stack)))
+                    rand_idx = randint(0, len(viewpoint_indices) - 1)
+                    viewpoint_cam = viewpoint_stack.pop(rand_idx)
+                    vind = viewpoint_indices.pop(rand_idx)
+
+                    bg = torch.rand((3), device="cuda") if opt.random_background else background
+                    render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp,
+                                        separate_sh=SPARSE_ADAM_AVAILABLE)
+                    image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg[
+                        "viewspace_points"], \
+                        render_pkg["visibility_filter"], render_pkg["radii"]
+                    if viewpoint_cam.depth_reliable:
+                        invDepth = render_pkg["depth"]
+                        # mono_invdepth是depth-anything出来的先验深度
+                        mono_invdepth = viewpoint_cam.invdepthmap.cuda()
+                    else:
+                        continue
+
+                    if viewpoint_cam.alpha_mask is not None:
+                        alpha_mask = viewpoint_cam.alpha_mask.cuda()
+                        image *= alpha_mask
+
+                    gaussians.tmp_radii = radii  # 先行赋值，防止后面出错
+                    # 变换所有高斯点坐标到相机坐标系，从而提取深度，最后返回相机系坐标Cam_Coordinate
+                    GaussianOpt.Cam_Coordinate = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, gaussians.get_xyz,
+                                                                  gaussians)
+                    # 透视投影，建立相机坐标和像素坐标上的关系，从而找到对应像素都有哪些高斯体，得到每个高斯体对应像素坐标Pixel_Coordinate
+                    GaussianOpt.PerspectiveProj(image, viewpoint_cam.FoVx, viewpoint_cam.FoVy,
+                                                GaussianOpt.Cam_Coordinate)
+                    # 像素坐标有效性检查，选择出有效的，可见的高斯体，得到可用的高斯体编号VALID_GS_IDX
+                    GaussianOpt.valid_pixel_filter(image, invDepth, mono_invdepth, visibility_filter.squeeze())
+
+                    # 深度信息处理
+                    GaussianOpt.Linear_InvDepth = GaussianOpt.linearization(invDepth,
+                                                                            viewpoint_cam.projection_matrix)  # 将非线性的深度线性化
+                    GaussianOpt.Linear_MonoDepth = GaussianOpt.linearization(mono_invdepth,
+                                                                             viewpoint_cam.projection_matrix)
+
+                    GaussianOpt.depth_normalization()  # 将线性深度归一化
+
+                    GaussianOpt.floatingObj_prune(gaussians, scene.cameras_extent, radii)
+
+                    gs_del_opt_epoch = gs_del_opt_epoch + 1
+                    if GaussianOpt.Delete_3DGS_CNT == 0:
+                        gs_del_opt_mincnt = gs_del_opt_mincnt + 1
+                    gs_del_total_cnt = gs_del_total_cnt + GaussianOpt.Delete_3DGS_CNT
+                    loss_list.append(gs_del_total_cnt)
+                    # 清空之前的图像，防止重叠
+                    plt.clf()
+                    # 绘制损失曲线
+                    plt.plot(range(1, len(loss_list) + 1), loss_list, label="Delete_3DGS_CNT", color='blue')
+                    plt.xlabel("Epoch")
+                    plt.ylabel("Delete_3DGS_CNT")
+                    plt.title("Training Delete_3DGS_CNT (Dynamic Update)")
+                    plt.legend()
+                    plt.grid()
+                    # 短暂暂停，允许 matplotlib 更新
+                    plt.pause(0.1)
+
             if iteration % 10 == 0:
                 progress_bar.set_postfix(
                     {"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
                 progress_bar.update(10)
-
-                # if iteration > 2000 and ema_loss_for_log < 0.02:
-                #     loss_list.append(ema_loss_for_log)
-                #     # 清空之前的图像，防止重叠
-                #     plt.clf()
-                #     # 绘制损失曲线
-                #     plt.plot(range(1, len(loss_list) + 1), loss_list, label="Training Loss", color='blue')
-                #     plt.xlabel("Epoch")
-                #     plt.ylabel("Loss")
-                #     plt.title("Training Loss Curve (Dynamic Update)")
-                #     plt.legend()
-                #     plt.grid()
-                #     # 短暂暂停，允许 matplotlib 更新
-                #     plt.pause(0.1)
 
             if iteration == opt.iterations:
                 progress_bar.close()
@@ -220,45 +277,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
-
-            # Gaussian Optimization Module（可能这一步要放在致密化之前，因为致密化改变了高斯体个数，使得渲染结果的可见性和高斯体总数对不上）
-            # is_depth_available = False
-            # if is_depth_available and opt.densify_until_iter < iteration < opt.densify_until_iter + 10000:
-            # if is_depth_available:
-            if is_depth_available and opt.densify_until_iter + 12500 < iteration:
-                gaussians.tmp_radii = radii  # 先行赋值，防止后面出错
-                # 变换所有高斯点坐标到相机坐标系，从而提取深度，最后返回相机系坐标Cam_Coordinate
-                GaussianOpt.Cam_Coordinate = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, gaussians.get_xyz,
-                                                              gaussians)
-
-                # 透视投影，建立相机坐标和像素坐标上的关系，从而找到对应像素都有哪些高斯体，得到每个高斯体对应像素坐标Pixel_Coordinate
-                GaussianOpt.PerspectiveProj(image, viewpoint_cam.FoVx, viewpoint_cam.FoVy, GaussianOpt.Cam_Coordinate)
-                # 像素坐标有效性检查，选择出有效的，可见的高斯体，得到可用的高斯体编号VALID_GS_IDX
-                GaussianOpt.valid_pixel_filter(image, invDepth, mono_invdepth, visibility_filter.squeeze())
-
-                # 深度信息处理
-                GaussianOpt.Linear_InvDepth = GaussianOpt.linearization(invDepth,
-                                                                        viewpoint_cam.projection_matrix)  # 将非线性的深度线性化
-                GaussianOpt.Linear_MonoDepth = GaussianOpt.linearization(mono_invdepth, viewpoint_cam.projection_matrix)
-
-                # plt.scatter(mono_invdepth.detach().cpu().numpy().flatten(), GaussianOpt.Linear_MonoDepth.detach().cpu().numpy().flatten(), alpha=0.5, s=1)
-                # plt.xlabel("Original mono_invdepth")
-                # plt.ylabel("Converted Linear_MonoDepth")
-                # plt.title("mono_invdepth vs. Linear_MonoDepth")
-                # plt.show(block=False)  # 非阻塞显示
-                # plt.pause(0.1)  # 短暂暂停，确保窗口刷新
-                # input("Press Enter to continue...")  # 等待手动关闭
-                # plt.close()  # 关闭窗口
-                # GaussianOpt.visualize_inv_depth(GaussianOpt.Linear_MonoDepth.squeeze())
-                GaussianOpt.depth_normalization()  # 将线性深度归一化
-
-                GaussianOpt.floatingObj_prune(gaussians, scene.cameras_extent, radii)
-                # GaussianOpt.gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii)
-
-            # render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp,
-            #                     separate_sh=SPARSE_ADAM_AVAILABLE)
-            # image, visibility_filter, radii = render_pkg["render"], \
-            #     render_pkg["visibility_filter"], render_pkg["radii"]
 
             # Densification 致密化和高斯优化模块不可以放在一起，不然会直接爆掉。因为高斯优化模块改变了高斯体，而这些记录并不在致密化中
             if iteration < opt.densify_until_iter:
@@ -293,8 +311,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
-
-    
 
 
 def prepare_output_and_logger(args):
