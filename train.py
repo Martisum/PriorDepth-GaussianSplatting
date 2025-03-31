@@ -196,7 +196,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gs_del_opt_mincnt = 0
                 gs_del_total_cnt = 0
                 gs_del_opt_total = len(viewpoint_stack)
-                while gs_del_opt_mincnt < 5 * gs_del_opt_total:
+                while gs_del_opt_mincnt < gs_del_opt_total:
                     gs_del_opt_mincnt = gs_del_opt_mincnt + 1
                     torch.cuda.empty_cache()
                     # 选择随机视角并渲染
@@ -245,7 +245,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     GaussianOpt.floatingObj_prune(gaussians, scene.cameras_extent, radii)
 
                     gs_del_opt_epoch = gs_del_opt_epoch + 1
-                    if GaussianOpt.Delete_3DGS_CNT == 0:
+                    if GaussianOpt.Delete_3DGS_CNT < 5:
                         gs_del_opt_mincnt = gs_del_opt_mincnt + 1
                     gs_del_total_cnt = gs_del_total_cnt + GaussianOpt.Delete_3DGS_CNT
                     loss_list.append(gs_del_total_cnt)
@@ -260,6 +260,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     plt.grid()
                     # 短暂暂停，允许 matplotlib 更新
                     plt.pause(0.1)
+
+            # if iteration == 15100:
+            #     gaussians.tmp_radii = radii  # 先行赋值，防止后面出错
+            #     # 变换所有高斯点坐标到相机坐标系，从而提取深度，最后返回相机系坐标Cam_Coordinate
+            #     GaussianOpt.Cam_Coordinate = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, gaussians.get_xyz,
+            #                                                   gaussians)
+            #     # 透视投影，建立相机坐标和像素坐标上的关系，从而找到对应像素都有哪些高斯体，得到每个高斯体对应像素坐标Pixel_Coordinate
+            #     GaussianOpt.PerspectiveProj(image, viewpoint_cam.FoVx, viewpoint_cam.FoVy,
+            #                                 GaussianOpt.Cam_Coordinate)
+            #     # 像素坐标有效性检查，选择出有效的，可见的高斯体，得到可用的高斯体编号VALID_GS_IDX
+            #     GaussianOpt.valid_pixel_filter(image, invDepth, mono_invdepth, visibility_filter.squeeze())
+            #
+            #     # 深度信息处理
+            #     GaussianOpt.Linear_InvDepth = GaussianOpt.linearization(invDepth,
+            #                                                             viewpoint_cam.projection_matrix)  # 将非线性的深度线性化
+            #     GaussianOpt.Linear_MonoDepth = GaussianOpt.linearization(mono_invdepth,
+            #                                                              viewpoint_cam.projection_matrix)
+            #
+            #     GaussianOpt.depth_normalization()  # 将线性深度归一化
+            #
+            #     GaussianOpt.floatingObj_prune(gaussians, scene.cameras_extent, radii)
 
             if iteration % 10 == 0:
                 progress_bar.set_postfix(

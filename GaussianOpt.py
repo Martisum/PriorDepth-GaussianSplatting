@@ -299,7 +299,7 @@ def depth_normalization():
     update_feature_target_table(tmp_pair)
     # 最小二乘法求出k和b，最后计算出归一化的深度
     LEA_k, LEA_b, isSuccess = least_squares(Feature_Target_Table[:, 0:1], Feature_Target_Table[:, 1:2])
-    LEA_k,LEA_b=1,0
+    LEA_k, LEA_b = 1, 0
     if isSuccess:
         Norm_InvDepth = LEA_k * valid_inv_depth + LEA_b
         Norm_MonoDepth = LEA_k * valid_monoinv_depth + LEA_b
@@ -337,6 +337,7 @@ def visualize_inv_depth(invDepth):
     plt.pause(0.1)  # 短暂暂停，确保窗口刷新
     input("Press Enter to continue...")  # 等待手动关闭
     plt.close()  # 关闭窗口
+
 
 def plot_invdepth_vs_z(Norm_InvDepth, Cam_Z):
     """
@@ -387,8 +388,8 @@ def floatingObj_prune(gaussians, cam_extent, radii):
     if VALID_GS_IDX.numel() == 0:
         # print("no VALID_GS_IDX!")
         return
-    diff_mask = ((Norm_MonoDepth - Norm_InvDepth) > 0.5*cam_extent).squeeze()
-    tmp_diff = Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze() - 0.6 * radii[VALID_GS_IDX]
+    diff_mask = ((Norm_MonoDepth - Norm_InvDepth) > 4 * cam_extent).squeeze()
+    tmp_diff = Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze() - 0.5 * radii[VALID_GS_IDX]
 
     # plot_invdepth_vs_z(Norm_InvDepth.squeeze()[:1000], Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze()[:1000])
     # input()
@@ -396,30 +397,34 @@ def floatingObj_prune(gaussians, cam_extent, radii):
     # if tmp_diff.min() < 0:
     #     print("jijiji")
     diff_mask = torch.logical_and(diff_mask, tmp_diff < Norm_InvDepth.squeeze())
+    diff_mask = torch.logical_and(diff_mask, Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze() < 25)
     if diff_mask.sum() == 0:  # 全为false则无需继续
         Delete_3DGS_CNT = 0
         return
 
     selected_gs_idx = VALID_GS_IDX[diff_mask.squeeze()]
+
+    # depth_values = gaussians.get_xyz[selected_gs_idx][:, 2].cpu()
+    # # 绘制直方图
+    # plt.ion()
+    # plt.figure(figsize=(8, 6))
+    # plt.ion()
+    # plt.hist(depth_values, bins=50, color='blue', alpha=0.7, edgecolor='black')
+    # plt.xlabel("Depth Value")
+    # plt.ylabel("Frequency")
+    # plt.title("Depth Distribution of Selected Gaussians")
+    # plt.grid(True)
+    # plt.draw()
+    # plt.pause(1)
+    # plt.ioff()
+    # print("a")
+    # plt.close()
+
     prune_filter = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.bool, device=selected_gs_idx.device)
     prune_filter[selected_gs_idx] = True
     gaussians.prune_points(prune_filter)
     print(selected_gs_idx.shape)
     Delete_3DGS_CNT = selected_gs_idx.shape[0]
-    """
-    思路：
-    找到符合如下条件的高斯体中心位置，并删除：
-        A.渲染深度要小于先验深度（足够说明先验深度之前存在高斯体的遮挡）
-        B.渲染深度要在高斯体中或者后（渲染深度如果在高斯体中或者在此高斯体后面，足以说明这个高斯体遮挡了渲染，需要删除）
-    为什么算法有效？
-        假设不满足条件A，那么应该是这个位置存在未补足的细节，而不是选择删除高斯体，应该用其他方法处理。
-        假设不满足条件B，说明渲染深度在高斯体的前面，那么我们无法判断这个高斯体是否正确。在其它视角中，这个高斯体可能是正确的
-        问：如果先验深度面前存在大量遮挡高斯体，你如何保证删除？
-        答：可以肯定的是，每一次迭代都会删掉一定数量的遮挡高斯体。只要迭代的次数足够多，就可以不断地删除这些遮挡的高斯体
-        问：你如何保证不会错误删除？
-        答：如果枚举到的高斯体的深度比渲染深度还要浅，并且先验深度又远大于渲染深度，那么可以认为渲染深度在计算的过程中一定统计了这个高斯体的不透明度，
-            并且这个渲染深度是错的。错误的原因，是这个高斯体一定为阻碍渲染深度做出了贡献，那么它肯定就是近相机漂浮物之一，需要删除
-    """
 
 
 def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii):
