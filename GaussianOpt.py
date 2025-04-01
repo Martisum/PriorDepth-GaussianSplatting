@@ -371,7 +371,7 @@ def plot_invdepth_vs_z(Norm_InvDepth, Cam_Z):
     plt.pause(0.1)
 
 
-def floatingObj_prune(gaussians, cam_extent, radii):
+def floatingObj_prune(gaussians, cam_extent):
     """
         删除近相机漂浮物
 
@@ -385,19 +385,24 @@ def floatingObj_prune(gaussians, cam_extent, radii):
             void
     """
     global VALID_GS_IDX, Norm_Pix_x, Norm_Pix_y, Norm_InvDepth, Norm_MonoDepth, Delete_3DGS_CNT
+    max_3D_radii = gaussians.get_scaling.max(dim=1).values
+    mean_3D_radii = gaussians.get_scaling.prod(dim=1).pow(1 / 3)  # 几何平均半径
+
     if VALID_GS_IDX.numel() == 0:
         # print("no VALID_GS_IDX!")
         return
-    diff_mask = ((Norm_MonoDepth - Norm_InvDepth) > 4 * cam_extent).squeeze()
-    tmp_diff = Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze() - 0.5 * radii[VALID_GS_IDX]
+    diff_mask = ((Norm_MonoDepth - Norm_InvDepth) > 1 * cam_extent).squeeze()
+    depth_mask = Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze() < 20
 
     # plot_invdepth_vs_z(Norm_InvDepth.squeeze()[:1000], Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze()[:1000])
     # input()
 
     # if tmp_diff.min() < 0:
     #     print("jijiji")
+    tmp_diff = Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze() - 1.0 * mean_3D_radii[VALID_GS_IDX]
     diff_mask = torch.logical_and(diff_mask, tmp_diff < Norm_InvDepth.squeeze())
-    diff_mask = torch.logical_and(diff_mask, Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze() < 25)
+    diff_mask = torch.logical_and(diff_mask, depth_mask)
+    diff_mask = torch.logical_or(diff_mask, torch.logical_and(depth_mask, max_3D_radii[VALID_GS_IDX] > 30))
     if diff_mask.sum() == 0:  # 全为false则无需继续
         Delete_3DGS_CNT = 0
         return

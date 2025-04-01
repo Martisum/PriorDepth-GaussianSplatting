@@ -190,14 +190,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
-            # Gaussian Optimization Module（可能这一步要放在致密化之前，因为致密化改变了高斯体个数，使得渲染结果的可见性和高斯体总数对不上）
-            if iteration == 40000:
+            # Gaussian Optimization Module
+            if iteration == 30000:
                 gs_del_opt_epoch = 0
                 gs_del_opt_mincnt = 0
                 gs_del_total_cnt = 0
                 gs_del_opt_total = len(viewpoint_stack)
                 while gs_del_opt_mincnt < gs_del_opt_total:
-                    gs_del_opt_mincnt = gs_del_opt_mincnt + 1
                     torch.cuda.empty_cache()
                     # 选择随机视角并渲染
                     if not viewpoint_stack:
@@ -242,10 +241,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                     GaussianOpt.depth_normalization()  # 将线性深度归一化
 
-                    GaussianOpt.floatingObj_prune(gaussians, scene.cameras_extent, radii)
+                    GaussianOpt.floatingObj_prune(gaussians, scene.cameras_extent)
 
                     gs_del_opt_epoch = gs_del_opt_epoch + 1
-                    if GaussianOpt.Delete_3DGS_CNT < 5:
+                    if GaussianOpt.Delete_3DGS_CNT == 0:
                         gs_del_opt_mincnt = gs_del_opt_mincnt + 1
                     gs_del_total_cnt = gs_del_total_cnt + GaussianOpt.Delete_3DGS_CNT
                     loss_list.append(gs_del_total_cnt)
