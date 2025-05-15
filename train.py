@@ -190,8 +190,38 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
-            # Gaussian Optimization Module
             if iteration == 30000:
+                z_depth = 15
+                Noise_Cnt = 6
+                # 手动增加噪声高斯体
+                new_xyz = torch.cat((
+                    torch.empty(Noise_Cnt, 2).uniform_(-2 * scene.cameras_extent, 1 * scene.cameras_extent),
+                    torch.full((Noise_Cnt, 1), z_depth)), dim=1)
+                gaussians.tmp_radii = radii  # 先行赋值，防止后面出错
+
+                closest_point_idx = gaussians.return_closest_point(new_xyz)
+
+                new_features_dc = gaussians.get_features_dc[closest_point_idx]
+                new_features_rest = gaussians.get_features_rest[closest_point_idx]
+                new_opacities = 4+torch.rand(Noise_Cnt, 1, dtype=torch.float32)*5
+                # new_opacities = torch.full(size=(Noise_Cnt, 1), fill_value=-10, dtype=torch.float32)
+                # new_scaling = torch.empty(Noise_Cnt, 3).uniform_(0, 0.05*scene.cameras_extent)
+                new_scaling = gaussians.get_scaling[torch.randint(0, len(gaussians.get_xyz), (Noise_Cnt,), dtype=torch.int64)]
+                new_rotation = gaussians.get_rotation[closest_point_idx]
+                new_tmp_radii = gaussians.tmp_radii[closest_point_idx]
+
+                gaussians.densification_postfix(
+                    new_xyz=new_xyz.to('cuda'),
+                    new_features_dc=new_features_dc.to('cuda'),
+                    new_features_rest=new_features_rest.to('cuda'),
+                    new_opacities=new_opacities.to('cuda'),
+                    new_scaling=new_scaling.to('cuda'),
+                    new_rotation=new_rotation.to('cuda'),
+                    new_tmp_radii=new_tmp_radii.to('cuda')
+                )
+
+            # Gaussian Optimization Module
+            if iteration == 40000:
                 gs_del_opt_epoch = 0
                 gs_del_opt_mincnt = 0
                 gs_del_total_cnt = 0
@@ -260,27 +290,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # 短暂暂停，允许 matplotlib 更新
                     plt.pause(0.1)
 
-            # if iteration == 15100:
-            #     gaussians.tmp_radii = radii  # 先行赋值，防止后面出错
-            #     # 变换所有高斯点坐标到相机坐标系，从而提取深度，最后返回相机系坐标Cam_Coordinate
-            #     GaussianOpt.Cam_Coordinate = GaussianOpt.WtoC(viewpoint_cam.R, viewpoint_cam.T, gaussians.get_xyz,
-            #                                                   gaussians)
-            #     # 透视投影，建立相机坐标和像素坐标上的关系，从而找到对应像素都有哪些高斯体，得到每个高斯体对应像素坐标Pixel_Coordinate
-            #     GaussianOpt.PerspectiveProj(image, viewpoint_cam.FoVx, viewpoint_cam.FoVy,
-            #                                 GaussianOpt.Cam_Coordinate)
-            #     # 像素坐标有效性检查，选择出有效的，可见的高斯体，得到可用的高斯体编号VALID_GS_IDX
-            #     GaussianOpt.valid_pixel_filter(image, invDepth, mono_invdepth, visibility_filter.squeeze())
-            #
-            #     # 深度信息处理
-            #     GaussianOpt.Linear_InvDepth = GaussianOpt.linearization(invDepth,
-            #                                                             viewpoint_cam.projection_matrix)  # 将非线性的深度线性化
-            #     GaussianOpt.Linear_MonoDepth = GaussianOpt.linearization(mono_invdepth,
-            #                                                              viewpoint_cam.projection_matrix)
-            #
-            #     GaussianOpt.depth_normalization()  # 将线性深度归一化
-            #
-            #     GaussianOpt.floatingObj_prune(gaussians, scene.cameras_extent, radii)
-
             if iteration % 10 == 0:
                 progress_bar.set_postfix(
                     {"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
@@ -331,6 +340,40 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+            # if iteration == 29999:
+            #     z_depth = 15
+            #     Noise_Cnt = 8
+            #     # 手动增加噪声高斯体
+            #     new_xyz = torch.cat((
+            #         torch.empty(Noise_Cnt, 2).uniform_(-2 * scene.cameras_extent, 1 * scene.cameras_extent),
+            #         torch.full((Noise_Cnt, 1), z_depth)), dim=1)
+            #     gaussians.tmp_radii = radii  # 先行赋值，防止后面出错
+            #
+            #     closest_point_idx = gaussians.return_closest_point(new_xyz)
+            #
+            #     new_features_dc = gaussians.get_features_dc[closest_point_idx]
+            #     new_features_rest = gaussians.get_features_rest[closest_point_idx]
+            #     new_opacities = torch.rand(Noise_Cnt, 1, dtype=torch.float32)*0.01
+            #     # new_scaling = torch.empty(Noise_Cnt, 3).uniform_(0, 0.05*scene.cameras_extent)
+            #     new_scaling = gaussians.get_scaling[torch.randint(0, len(gaussians.get_xyz), (Noise_Cnt,), dtype=torch.int64)]
+            #     new_rotation = gaussians.get_rotation[closest_point_idx]
+            #     new_tmp_radii = gaussians.tmp_radii[closest_point_idx]
+            #
+            #     gaussians.densification_postfix(
+            #         new_xyz=new_xyz.to('cuda'),
+            #         new_features_dc=new_features_dc.to('cuda'),
+            #         new_features_rest=new_features_rest.to('cuda'),
+            #         new_opacities=new_opacities.to('cuda'),
+            #         new_scaling=new_scaling.to('cuda'),
+            #         new_rotation=new_rotation.to('cuda'),
+            #         new_tmp_radii=new_tmp_radii.to('cuda')
+            #     )
+                # x = torch.rand(1) * (10 * scene.cameras_extent)
+                # y = torch.rand(1) * (10 * scene.cameras_extent)
+                # z_depth = 10
+                # noise_scaling = torch.tensor([[1, 2, 3]], dtype=torch.float32)
+                # noise_xyz = torch.tensor([[x, y, z_depth]], dtype=torch.float32)
 
 
 def prepare_output_and_logger(args):

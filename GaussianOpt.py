@@ -34,6 +34,7 @@ Delete_3DGS_CNT = 100  # 随便给个默认数值，大于10就行
 
 def initialize():
     GaussianModel.set_z = set_z
+    GaussianModel.return_closest_point = return_closest_point
 
 
 def WtoC(R, T, world_pos, gaussian_model):
@@ -402,7 +403,7 @@ def floatingObj_prune(gaussians, cam_extent):
     tmp_diff = Cam_Coordinate[:, 2][VALID_GS_IDX].squeeze() - 1.0 * mean_3D_radii[VALID_GS_IDX]
     diff_mask = torch.logical_and(diff_mask, tmp_diff < Norm_InvDepth.squeeze())
     diff_mask = torch.logical_and(diff_mask, depth_mask)
-    diff_mask = torch.logical_or(diff_mask, torch.logical_and(depth_mask, max_3D_radii[VALID_GS_IDX] > 30))
+    diff_mask = torch.logical_or(diff_mask, torch.logical_and(depth_mask, max_3D_radii[VALID_GS_IDX] > 50))
     if diff_mask.sum() == 0:  # 全为false则无需继续
         Delete_3DGS_CNT = 0
         return
@@ -500,6 +501,19 @@ def gs_adjustment(invDepth, mono_invdepth, gaussians, viewpoint_cam, radii):
     new_z = new_world_xyz[:, 2].squeeze()
     print(new_z.shape)
     gaussians.set_z(new_z, VALID_GS_IDX)  # 这里因为要改高斯体了，所以需要使用绝对的编号
+
+
+def return_closest_point(self, new_xyz):
+    # 1. 从 COLMAP 重建的点云中提取现有点的坐标
+    colmap_xyz = self._xyz  # COLMAP 重建的点坐标
+    new_xyz = new_xyz.to(colmap_xyz.device)
+    # 2. 计算新点与 COLMAP 点云中所有点的欧几里得距离
+    distances = torch.cdist(new_xyz,colmap_xyz)
+    # 3. 找到最近的点
+    closest_point_index = distances.argmin(dim=1)  # 获取最小距离的索引
+    return closest_point_index
+
+
 
 
 initialize()  # 文件初始化
